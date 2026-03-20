@@ -1,0 +1,9 @@
+numpy==2.4.3
+opencv-python==4.13.0.92
+packaging @ file:///C:/miniconda3/conda-bld/packaging_1761049096285/work
+pillow==12.1.1
+PySide6==6.10.2
+PySide6_Addons==6.10.2
+PySide6_Essentials==6.10.2
+scipy==1.17.1
+shiboken6==6.10.2
