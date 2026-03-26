@@ -1,0 +1,60 @@
+{
+    "nodes": [
+        {
+            "id": 1,
+            "x": 0.0,
+            "y": 0.0
+        },
+        {
+            "id": 2,
+            "x": 1.0,
+            "y": 0.0
+        },
+        {
+            "id": 3,
+            "x": 0.0,
+            "y": 1.0
+        }
+    ],
+    "elements": [
+        {
+            "id": 1,
+            "node_ids": [
+                1,
+                2,
+                3
+            ],
+            "material_id": 1,
+            "element_type": "CST"
+        }
+    ],
+    "materials": [
+        {
+            "id": 1,
+            "name": "Steel",
+            "young_modulus": 210000000000.0,
+            "poisson_ratio": 0.3,
+            "thickness": 0.01,
+            "plane_mode": "stress"
+        }
+    ],
+    "constraints": [
+        {
+            "id": 1,
+            "node_id": 1,
+            "ux_fixed": true,
+            "uy_fixed": true,
+            "ux_value": 0.0,
+            "uy_value": 0.0
+        }
+    ],
+    "loads": [
+        {
+            "id": 1,
+            "node_id": 2,
+            "fx": 1000.0,
+            "fy": 0.0,
+            "load_type": "nodal"
+        }
+    ]
+}
