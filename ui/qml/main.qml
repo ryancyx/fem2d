@@ -236,7 +236,7 @@ ApplicationWindow {
                             color: "#f3f6fa"
                             border.color: borderColor
                             implicitHeight: 38
-                            Layout.preferredWidth: 278
+                            Layout.preferredWidth: 258
                             clip: true
 
                             RowLayout {
@@ -277,7 +277,7 @@ ApplicationWindow {
                             color: "#f3f6fa"
                             border.color: borderColor
                             implicitHeight: 38
-                            Layout.preferredWidth: 440
+                            Layout.preferredWidth: 454
                             clip: true
 
                             RowLayout {
@@ -331,7 +331,7 @@ ApplicationWindow {
                             color: "#f3f6fa"
                             border.color: borderColor
                             implicitHeight: 38
-                            Layout.preferredWidth: 278
+                            Layout.preferredWidth: 314
                             clip: true
 
                             RowLayout {
@@ -562,7 +562,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 180
+                        Layout.preferredHeight: 300
                         radius: 6
                         color: bgPanel3
                         border.color: borderColor
@@ -573,7 +573,7 @@ ApplicationWindow {
                             spacing: 8
 
                             Label {
-                                text: "快捷操作"
+                                text: "快捷操作 / 测试数据"
                                 color: textMain
                                 font.pixelSize: 13
                                 font.bold: true
@@ -581,26 +581,47 @@ ApplicationWindow {
 
                             Button {
                                 Layout.fillWidth: true
-                                text: "创建节点"
+                                text: "添加测试节点"
                                 onClicked: {
-                                    appController.set_node_mode()
-                                    shell_status = "创建节点：占位功能"
+                                    appController.add_test_node()
+                                    shell_status = "已执行：添加测试节点"
                                 }
                             }
 
                             Button {
                                 Layout.fillWidth: true
-                                text: "创建单元"
+                                text: "添加测试材料"
                                 onClicked: {
-                                    appController.set_element_mode()
-                                    shell_status = "创建单元：占位功能"
+                                    appController.add_test_material()
+                                    shell_status = "已执行：添加测试材料"
                                 }
                             }
 
                             Button {
                                 Layout.fillWidth: true
-                                text: "分配材料"
-                                onClicked: shell_status = "分配材料：占位功能"
+                                text: "添加测试单元"
+                                onClicked: {
+                                    appController.add_test_element()
+                                    shell_status = "已执行：添加测试单元"
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "添加测试约束"
+                                onClicked: {
+                                    appController.add_test_constraint()
+                                    shell_status = "已执行：添加测试约束"
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "添加测试载荷"
+                                onClicked: {
+                                    appController.add_test_load()
+                                    shell_status = "已执行：添加测试载荷"
+                                }
                             }
                         }
                     }
@@ -946,7 +967,7 @@ ApplicationWindow {
                                 radius: 6
                                 color: bgPanel3
                                 border.color: borderColor
-                                implicitHeight: 200
+                                implicitHeight: 228
 
                                 ColumnLayout {
                                     anchors.fill: parent
@@ -968,11 +989,11 @@ ApplicationWindow {
 
                                     Label { text: "当前状态：" + appController.status_text; color: textMain }
                                     Label { text: "当前模式：" + appController.current_mode; color: textMain }
-                                    Label { text: "节点数：0"; color: textMain }
-                                    Label { text: "单元数：0"; color: textMain }
-                                    Label { text: "材料数：0"; color: textMain }
-                                    Label { text: "约束数：0"; color: textMain }
-                                    Label { text: "载荷数：0"; color: textMain }
+                                    Label { text: "节点数：" + appController.node_count; color: textMain }
+                                    Label { text: "单元数：" + appController.element_count; color: textMain }
+                                    Label { text: "材料数：" + appController.material_count; color: textMain }
+                                    Label { text: "约束数：" + appController.constraint_count; color: textMain }
+                                    Label { text: "载荷数：" + appController.load_count; color: textMain }
                                 }
                             }
 
@@ -1012,7 +1033,7 @@ ApplicationWindow {
                                 radius: 6
                                 color: bgPanel3
                                 border.color: borderColor
-                                implicitHeight: 270
+                                implicitHeight: 330
 
                                 ColumnLayout {
                                     anchors.fill: parent
