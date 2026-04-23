@@ -7,17 +7,24 @@ from model.load import Load
 from model.material import Material
 from model.node import Node
 
+from solver.solver import SolverResult, solve_linear_static
+
 
 class AppController(QObject):
     status_text_changed = Signal()
     current_mode_changed = Signal()
     model_stats_changed = Signal()
+    solver_results_changed = Signal()
 
     def __init__(self):
         super().__init__()
         self._status_text = "就绪"
         self._current_mode = "none"
         self._model = FEMModel()
+
+        self._solver_result: SolverResult | None = None
+        self._node_result_rows: list[dict] = []
+        self._element_result_rows: list[dict] = []
 
     @Property(str, notify=status_text_changed)
     def status_text(self):
@@ -47,6 +54,10 @@ class AppController(QObject):
     def load_count(self):
         return len(self._model.loads)
 
+    @Property(bool, notify=solver_results_changed)
+    def solver_has_result(self):
+        return self._solver_result is not None
+
     def set_status_text(self, text: str) -> None:
         if self._status_text != text:
             self._status_text = text
@@ -59,6 +70,9 @@ class AppController(QObject):
 
     def notify_model_stats_changed(self) -> None:
         self.model_stats_changed.emit()
+
+    def _notify_solver_results_changed(self) -> None:
+        self.solver_results_changed.emit()
 
     def _next_id(self, items) -> int:
         if not items:
@@ -81,9 +95,55 @@ class AppController(QObject):
         self._model.materials.append(material)
         return material_id
 
+    def _clear_solver_results(self) -> None:
+        self._solver_result = None
+        self._node_result_rows = []
+        self._element_result_rows = []
+        self._notify_solver_results_changed()
+
+    def _invalidate_results_after_model_change(self) -> None:
+        if self._solver_result is not None:
+            self._clear_solver_results()
+            self.set_current_mode("edit")
+
+    def _build_node_result_rows(self, solver_result: SolverResult) -> list[dict]:
+        rows: list[dict] = []
+
+        for node_id, (ux, uy) in solver_result.node_displacements.items():
+            rows.append(
+                {
+                    "node_id": int(node_id),
+                    "ux": float(ux),
+                    "uy": float(uy),
+                }
+            )
+
+        rows.sort(key=lambda item: item["node_id"])
+        return rows
+
+    def _build_element_result_rows(self, solver_result: SolverResult) -> list[dict]:
+        rows: list[dict] = []
+
+        for item in solver_result.element_results:
+            rows.append(
+                {
+                    "element_id": int(item.element_id),
+                    "strain_x": float(item.strain[0]),
+                    "strain_y": float(item.strain[1]),
+                    "gamma_xy": float(item.strain[2]),
+                    "stress_x": float(item.stress[0]),
+                    "stress_y": float(item.stress[1]),
+                    "tau_xy": float(item.stress[2]),
+                }
+            )
+
+        rows.sort(key=lambda item: item["element_id"])
+        return rows
+
     @Slot()
     def new_model(self) -> None:
         self._model = FEMModel()
+        self._clear_solver_results()
         self.set_current_mode("none")
         self.set_status_text("已新建空模型")
         self.notify_model_stats_changed()
@@ -100,6 +160,8 @@ class AppController(QObject):
 
     @Slot()
     def add_test_node(self) -> None:
+        self._invalidate_results_after_model_change()
+
         node_id = self._next_id(self._model.nodes)
 
         preset_coords = [
@@ -127,6 +189,8 @@ class AppController(QObject):
 
     @Slot()
     def add_test_material(self) -> None:
+        self._invalidate_results_after_model_change()
+
         material_id = self._next_id(self._model.materials)
 
         material = Material(
@@ -147,6 +211,8 @@ class AppController(QObject):
         if len(self._model.nodes) < 3:
             self.set_status_text("创建测试单元失败：至少需要 3 个节点")
             return
+
+        self._invalidate_results_after_model_change()
 
         material_id = self._ensure_default_material()
         element_id = self._next_id(self._model.elements)
@@ -174,6 +240,8 @@ class AppController(QObject):
             self.set_status_text("添加测试约束失败：请先创建节点")
             return
 
+        self._invalidate_results_after_model_change()
+
         index = min(len(self._model.constraints), len(self._model.nodes) - 1)
         target_node = self._model.nodes[index]
         constraint_id = self._next_id(self._model.constraints)
@@ -197,6 +265,8 @@ class AppController(QObject):
             self.set_status_text("添加测试载荷失败：请先创建节点")
             return
 
+        self._invalidate_results_after_model_change()
+
         index = min(len(self._model.loads), len(self._model.nodes) - 1)
         target_node = self._model.nodes[index]
         load_id = self._next_id(self._model.loads)
@@ -212,3 +282,35 @@ class AppController(QObject):
 
         self.set_status_text(f"已在节点 {target_node.id} 上添加测试载荷")
         self.notify_model_stats_changed()
+
+    @Slot(result=bool)
+    def solve_model(self) -> bool:
+        try:
+            solver_result = solve_linear_static(self._model)
+
+            self._solver_result = solver_result
+            self._node_result_rows = self._build_node_result_rows(solver_result)
+            self._element_result_rows = self._build_element_result_rows(solver_result)
+
+            self.set_current_mode("result")
+            self.set_status_text("求解完成")
+            self._notify_solver_results_changed()
+            return True
+
+        except Exception as exc:
+            self._clear_solver_results()
+            self.set_current_mode("edit")
+            self.set_status_text(f"求解失败：{exc}")
+            return False
+
+    @Slot(result=bool)
+    def has_solver_result(self) -> bool:
+        return self._solver_result is not None
+
+    @Slot(result="QVariantList")
+    def get_node_result_rows(self):
+        return list(self._node_result_rows)
+
+    @Slot(result="QVariantList")
+    def get_element_result_rows(self):
+        return list(self._element_result_rows)
