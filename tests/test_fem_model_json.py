@@ -124,7 +124,7 @@ def test_build_and_json_io():
     # 先检查原始模型本身没问题
     check_model_basic_data(model)
 
-    test_file = "demo_model.json"
+    test_file = "../demo_model.json"
 
     # 保存到 JSON
     save_model_to_json(model, test_file)
