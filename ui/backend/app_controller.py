@@ -1,3 +1,5 @@
+import math
+
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from model.constraint import Constraint
@@ -15,6 +17,8 @@ class AppController(QObject):
     current_mode_changed = Signal()
     model_stats_changed = Signal()
     solver_results_changed = Signal()
+    node_data_changed = Signal()
+    selected_node_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -25,6 +29,8 @@ class AppController(QObject):
         self._solver_result: SolverResult | None = None
         self._node_result_rows: list[dict] = []
         self._element_result_rows: list[dict] = []
+
+        self._selected_node_id: int | None = None
 
     @Property(str, notify=status_text_changed)
     def status_text(self):
@@ -58,6 +64,31 @@ class AppController(QObject):
     def solver_has_result(self):
         return self._solver_result is not None
 
+    @Property(bool, notify=selected_node_changed)
+    def selected_node_exists(self):
+        return self._get_selected_node() is not None
+
+    @Property(int, notify=selected_node_changed)
+    def selected_node_id(self):
+        node = self._get_selected_node()
+        if node is None:
+            return -1
+        return node.id
+
+    @Property(float, notify=selected_node_changed)
+    def selected_node_x(self):
+        node = self._get_selected_node()
+        if node is None:
+            return 0.0
+        return float(node.x)
+
+    @Property(float, notify=selected_node_changed)
+    def selected_node_y(self):
+        node = self._get_selected_node()
+        if node is None:
+            return 0.0
+        return float(node.y)
+
     def set_status_text(self, text: str) -> None:
         if self._status_text != text:
             self._status_text = text
@@ -73,6 +104,12 @@ class AppController(QObject):
 
     def _notify_solver_results_changed(self) -> None:
         self.solver_results_changed.emit()
+
+    def _notify_node_data_changed(self) -> None:
+        self.node_data_changed.emit()
+
+    def _notify_selected_node_changed(self) -> None:
+        self.selected_node_changed.emit()
 
     def _next_id(self, items) -> int:
         if not items:
@@ -140,13 +177,79 @@ class AppController(QObject):
         rows.sort(key=lambda item: item["element_id"])
         return rows
 
+    def _find_node_by_id(self, node_id: int) -> Node | None:
+        for node in self._model.nodes:
+            if node.id == node_id:
+                return node
+        return None
+
+    def _set_selected_node_id(self, node_id: int | None) -> None:
+        if self._selected_node_id != node_id:
+            self._selected_node_id = node_id
+            self._notify_selected_node_changed()
+
+    def _get_selected_node(self) -> Node | None:
+        if self._selected_node_id is None:
+            return None
+        return self._find_node_by_id(self._selected_node_id)
+
+    def _validate_coordinate(self, value: float, name: str) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"{name} 不是有效数字")
+        return float(value)
+
+    def _parse_coordinate_text(self, text: str, name: str) -> float:
+        stripped = text.strip()
+        if stripped == "":
+            raise ValueError(f"{name} 不能为空")
+
+        try:
+            value = float(stripped)
+        except ValueError as exc:
+            raise ValueError(f"{name} 不是合法数字") from exc
+
+        return self._validate_coordinate(value, name)
+
+    def _build_node_rows(self) -> list[dict]:
+        rows: list[dict] = []
+
+        for node in self._model.nodes:
+            rows.append(
+                {
+                    "id": int(node.id),
+                    "x": float(node.x),
+                    "y": float(node.y),
+                }
+            )
+
+        rows.sort(key=lambda item: item["id"])
+        return rows
+
+    def _node_is_referenced(self, node_id: int) -> tuple[bool, str]:
+        for element in self._model.elements:
+            if node_id in element.node_ids:
+                return True, f"节点 {node_id} 已被单元 {element.id} 引用，不能删除"
+
+        for constraint in self._model.constraints:
+            if constraint.node_id == node_id:
+                return True, f"节点 {node_id} 已被约束 {constraint.id} 引用，不能删除"
+
+        for load in self._model.loads:
+            if load.node_id == node_id:
+                return True, f"节点 {node_id} 已被载荷 {load.id} 引用，不能删除"
+
+        return False, ""
+
     @Slot()
     def new_model(self) -> None:
         self._model = FEMModel()
+        self._selected_node_id = None
         self._clear_solver_results()
         self.set_current_mode("none")
         self.set_status_text("已新建空模型")
         self.notify_model_stats_changed()
+        self._notify_node_data_changed()
+        self._notify_selected_node_changed()
 
     @Slot()
     def set_node_mode(self) -> None:
@@ -158,12 +261,145 @@ class AppController(QObject):
         self.set_current_mode("element")
         self.set_status_text("已切换到单元模式")
 
+    @Slot(result="QVariantList")
+    def get_node_rows(self):
+        return self._build_node_rows()
+
+    @Slot(result="QVariantMap")
+    def get_selected_node_row(self):
+        node = self._get_selected_node()
+        if node is None:
+            return {}
+
+        return {
+            "id": int(node.id),
+            "x": float(node.x),
+            "y": float(node.y),
+        }
+
+    @Slot(int, result=bool)
+    def select_node(self, node_id: int) -> bool:
+        node = self._find_node_by_id(node_id)
+        if node is None:
+            self.set_status_text(f"选中节点失败：不存在编号为 {node_id} 的节点")
+            return False
+
+        self._set_selected_node_id(node.id)
+        self.set_current_mode("node")
+        self.set_status_text(f"已选中节点 {node.id}")
+        return True
+
     @Slot()
-    def add_test_node(self) -> None:
+    def clear_node_selection(self) -> None:
+        self._set_selected_node_id(None)
+        self.set_status_text("已取消节点选中")
+
+    @Slot(float, float, result=bool)
+    def add_node_by_coord(self, x: float, y: float) -> bool:
+        try:
+            x = self._validate_coordinate(x, "X")
+            y = self._validate_coordinate(y, "Y")
+        except ValueError as exc:
+            self.set_status_text(f"添加节点失败：{exc}")
+            return False
+
         self._invalidate_results_after_model_change()
 
         node_id = self._next_id(self._model.nodes)
+        node = Node(id=node_id, x=x, y=y)
+        self._model.nodes.append(node)
 
+        self._set_selected_node_id(node.id)
+        self.set_current_mode("node")
+        self.set_status_text(f"已添加节点 {node.id} ({x:.3f}, {y:.3f})")
+        self.notify_model_stats_changed()
+        self._notify_node_data_changed()
+        return True
+
+    @Slot(str, str, result=bool)
+    def add_node_by_text(self, x_text: str, y_text: str) -> bool:
+        try:
+            x = self._parse_coordinate_text(x_text, "X")
+            y = self._parse_coordinate_text(y_text, "Y")
+        except ValueError as exc:
+            self.set_status_text(f"添加节点失败：{exc}")
+            return False
+
+        return self.add_node_by_coord(x, y)
+
+    @Slot(float, float, result=bool)
+    def update_selected_node_position(self, x: float, y: float) -> bool:
+        node = self._get_selected_node()
+        if node is None:
+            self.set_status_text("修改节点失败：当前没有选中任何节点")
+            return False
+
+        try:
+            x = self._validate_coordinate(x, "X")
+            y = self._validate_coordinate(y, "Y")
+        except ValueError as exc:
+            self.set_status_text(f"修改节点失败：{exc}")
+            return False
+
+        self._invalidate_results_after_model_change()
+
+        node.x = x
+        node.y = y
+
+        self.set_current_mode("node")
+        self.set_status_text(f"已更新节点 {node.id} 坐标为 ({x:.3f}, {y:.3f})")
+        self._notify_node_data_changed()
+        self._notify_selected_node_changed()
+        return True
+
+    @Slot(str, str, result=bool)
+    def update_selected_node_position_by_text(self, x_text: str, y_text: str) -> bool:
+        try:
+            x = self._parse_coordinate_text(x_text, "X")
+            y = self._parse_coordinate_text(y_text, "Y")
+        except ValueError as exc:
+            self.set_status_text(f"修改节点失败：{exc}")
+            return False
+
+        return self.update_selected_node_position(x, y)
+
+    @Slot(int, result=bool)
+    def delete_node(self, node_id: int) -> bool:
+        node = self._find_node_by_id(node_id)
+        if node is None:
+            self.set_status_text(f"删除节点失败：不存在编号为 {node_id} 的节点")
+            return False
+
+        referenced, message = self._node_is_referenced(node_id)
+        if referenced:
+            self.set_status_text(f"删除节点失败：{message}")
+            return False
+
+        self._invalidate_results_after_model_change()
+
+        self._model.nodes = [item for item in self._model.nodes if item.id != node_id]
+
+        if self._selected_node_id == node_id:
+            self._selected_node_id = None
+
+        self.set_current_mode("node")
+        self.set_status_text(f"已删除节点 {node_id}")
+        self.notify_model_stats_changed()
+        self._notify_node_data_changed()
+        self._notify_selected_node_changed()
+        return True
+
+    @Slot(result=bool)
+    def delete_selected_node(self) -> bool:
+        node = self._get_selected_node()
+        if node is None:
+            self.set_status_text("删除节点失败：当前没有选中任何节点")
+            return False
+
+        return self.delete_node(node.id)
+
+    @Slot()
+    def add_test_node(self) -> None:
         preset_coords = [
             (0.0, 0.0),
             (100.0, 0.0),
@@ -180,12 +416,7 @@ class AppController(QObject):
             x = float((index % 4) * 100.0)
             y = float((index // 4) * 100.0)
 
-        node = Node(id=node_id, x=x, y=y)
-        self._model.nodes.append(node)
-
-        self.set_current_mode("node")
-        self.set_status_text(f"已添加测试节点 {node_id} ({x:.1f}, {y:.1f})")
-        self.notify_model_stats_changed()
+        self.add_node_by_coord(x, y)
 
     @Slot()
     def add_test_material(self) -> None:

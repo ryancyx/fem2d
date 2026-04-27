@@ -30,59 +30,11 @@ ApplicationWindow {
     property string current_workspace: "模型-1"
     property string selection_info: "无"
 
-    property bool leftPanelVisible: true
-    property bool rightPanelVisible: true
-
-    property string activeViewportTool: "add"
-
     property real viewportPadding: 52
-    property real fallbackModelWidth: 4
-    property real fallbackModelHeight: 3
+    property real fallbackModelWidth: 400
+    property real fallbackModelHeight: 300
     property real cursorModelX: 0.0
     property real cursorModelY: 0.0
-
-    property real viewportZoom: 1.0
-    property real viewportPanX: 0.0
-    property real viewportPanY: 0.0
-    property real minViewportZoom: 0.1
-    property real maxViewportZoom: 20.0
-    property real lastPanMouseX: 0.0
-    property real lastPanMouseY: 0.0
-
-    function clamp(value, minValue, maxValue) {
-        return Math.max(minValue, Math.min(maxValue, value))
-    }
-
-    function setViewportTool(toolName) {
-        activeViewportTool = toolName
-
-        if (toolName === "add") {
-            appController.set_node_mode()
-            shell_status = "视口工具：添加节点"
-        } else if (toolName === "move") {
-            shell_status = "视口工具：移动视图"
-        } else if (toolName === "delete") {
-            shell_status = "视口工具：删除节点"
-        }
-    }
-
-    function resetViewportTransform() {
-        viewportZoom = 1.0
-        viewportPanX = 0.0
-        viewportPanY = 0.0
-        shell_status = "已重置视口缩放和平移"
-    }
-
-    function deleteCurrentNodeFromView() {
-        var ok = appController.delete_selected_node()
-        if (ok) {
-            refreshNodeModel()
-            syncSelectedNodeEditor()
-            shell_status = "已删除当前选中节点"
-        } else {
-            shell_status = appController.status_text
-        }
-    }
 
     function refreshNodeModel() {
         nodeListModel.clear()
@@ -187,81 +139,35 @@ ApplicationWindow {
         return value <= 0 ? 1 : value
     }
 
-    function baseNodeToViewportX(xValue) {
+    function nodeToViewportX(xValue) {
         var usableWidth = Math.max(1, viewport.width - viewportPadding * 2)
         return viewportPadding + ((xValue - viewportMinX()) / viewportRangeX()) * usableWidth
     }
 
-    function baseNodeToViewportY(yValue) {
+    function nodeToViewportY(yValue) {
         var usableHeight = Math.max(1, viewport.height - viewportPadding * 2)
         return viewport.height - viewportPadding - ((yValue - viewportMinY()) / viewportRangeY()) * usableHeight
     }
 
-    function nodeToViewportX(xValue) {
-        var centerX = viewport.width / 2
-        var baseX = baseNodeToViewportX(xValue)
-        return centerX + (baseX - centerX) * viewportZoom + viewportPanX
-    }
-
-    function nodeToViewportY(yValue) {
-        var centerY = viewport.height / 2
-        var baseY = baseNodeToViewportY(yValue)
-        return centerY + (baseY - centerY) * viewportZoom + viewportPanY
-    }
-
-    function viewportToBaseX(viewX) {
-        var centerX = viewport.width / 2
-        return centerX + (viewX - viewportPanX - centerX) / viewportZoom
-    }
-
-    function viewportToBaseY(viewY) {
-        var centerY = viewport.height / 2
-        return centerY + (viewY - viewportPanY - centerY) / viewportZoom
-    }
-
     function viewportToModelX(viewX) {
-        var baseX = viewportToBaseX(viewX)
         var usableWidth = Math.max(1, viewport.width - viewportPadding * 2)
-        var normalized = (baseX - viewportPadding) / usableWidth
+        var normalized = (viewX - viewportPadding) / usableWidth
         normalized = Math.max(0, Math.min(1, normalized))
         return viewportMinX() + normalized * viewportRangeX()
     }
 
     function viewportToModelY(viewY) {
-        var baseY = viewportToBaseY(viewY)
         var usableHeight = Math.max(1, viewport.height - viewportPadding * 2)
-        var normalized = (viewport.height - viewportPadding - baseY) / usableHeight
+        var normalized = (viewport.height - viewportPadding - viewY) / usableHeight
         normalized = Math.max(0, Math.min(1, normalized))
         return viewportMinY() + normalized * viewportRangeY()
     }
 
     function viewportPointIsValid(viewX, viewY) {
-        var baseX = viewportToBaseX(viewX)
-        var baseY = viewportToBaseY(viewY)
-
-        return baseX >= viewportPadding
-            && baseX <= viewport.width - viewportPadding
-            && baseY >= viewportPadding
-            && baseY <= viewport.height - viewportPadding
-    }
-
-    function zoomViewportAt(viewX, viewY, wheelDeltaY) {
-        var beforeModelX = viewportToModelX(viewX)
-        var beforeModelY = viewportToModelY(viewY)
-
-        var factor = wheelDeltaY > 0 ? 1.2 : 0.833333
-        viewportZoom = clamp(viewportZoom * factor, minViewportZoom, maxViewportZoom)
-
-        var afterViewX = nodeToViewportX(beforeModelX)
-        var afterViewY = nodeToViewportY(beforeModelY)
-
-        viewportPanX += viewX - afterViewX
-        viewportPanY += viewY - afterViewY
-
-        cursorModelX = beforeModelX
-        cursorModelY = beforeModelY
-
-        shell_status = "视口缩放：" + Number(viewportZoom * 100).toFixed(0) + "%"
+        return viewX >= viewportPadding
+            && viewX <= viewport.width - viewportPadding
+            && viewY >= viewportPadding
+            && viewY <= viewport.height - viewportPadding
     }
 
     ListModel {
@@ -324,36 +230,6 @@ ApplicationWindow {
             color: control.emphasized ? "#ffffff" : textMain
             font.pixelSize: 12
             font.bold: control.emphasized
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-    }
-
-    component HeaderIconButton: ToolButton {
-        id: control
-
-        property bool active: false
-
-        implicitHeight: 28
-        implicitWidth: 34
-        padding: 0
-        hoverEnabled: true
-
-        background: Rectangle {
-            radius: 4
-            color: control.down
-                   ? (control.active ? "#416ab2" : "#dbe3ec")
-                   : control.hovered
-                     ? (control.active ? "#5a84d2" : "#eef3f8")
-                     : (control.active ? accent : "#f8fafc")
-            border.color: control.active ? "#4068b0" : "#cdd6e0"
-        }
-
-        contentItem: Text {
-            text: control.text
-            color: control.active ? "#ffffff" : textMain
-            font.pixelSize: 15
-            font.bold: control.active
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
@@ -557,7 +433,6 @@ ApplicationWindow {
                                         appController.new_model()
                                         shell_status = "已新建空项目"
                                         refreshAllData()
-                                        resetViewportTransform()
                                     }
                                 }
 
@@ -600,7 +475,6 @@ ApplicationWindow {
                                     text: "节点"
                                     onClicked: {
                                         appController.set_node_mode()
-                                        activeViewportTool = "add"
                                         shell_status = "已切换到节点编辑模式"
                                     }
                                 }
@@ -679,68 +553,6 @@ ApplicationWindow {
                             }
                         }
 
-                        Rectangle {
-                            radius: 6
-                            color: "#f3f6fa"
-                            border.color: borderColor
-                            implicitHeight: 38
-                            Layout.preferredWidth: 240
-                            clip: true
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 8
-                                anchors.rightMargin: 8
-                                spacing: 6
-
-                                Label {
-                                    text: "画布"
-                                    color: textMuted
-                                    font.pixelSize: 12
-                                    font.bold: true
-                                }
-
-                                HeaderIconButton {
-                                    text: "+"
-                                    active: activeViewportTool === "add"
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "添加节点"
-                                    onClicked: setViewportTool("add")
-                                }
-
-                                HeaderIconButton {
-                                    text: "↔"
-                                    active: activeViewportTool === "move"
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "移动视图"
-                                    onClicked: setViewportTool("move")
-                                }
-
-                                HeaderIconButton {
-                                    text: "×"
-                                    active: activeViewportTool === "delete"
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "删除节点"
-                                    onClicked: setViewportTool("delete")
-                                }
-
-                                HeaderIconButton {
-                                    text: "⟳"
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "重置视图"
-                                    onClicked: resetViewportTransform()
-                                }
-
-                                HeaderIconButton {
-                                    text: "⌫"
-                                    enabled: appController.selected_node_exists
-                                    ToolTip.visible: hovered
-                                    ToolTip.text: "删除当前选中节点"
-                                    onClicked: deleteCurrentNodeFromView()
-                                }
-                            }
-                        }
-
                         Item {
                             Layout.fillWidth: true
                         }
@@ -783,16 +595,13 @@ ApplicationWindow {
         }
 
         SplitView {
-            id: mainSplitView
             Layout.fillWidth: true
             Layout.fillHeight: true
             orientation: Qt.Horizontal
 
             Rectangle {
-                id: leftPanel
-                visible: leftPanelVisible
-                SplitView.minimumWidth: leftPanelVisible ? 250 : 0
-                SplitView.preferredWidth: leftPanelVisible ? 320 : 0
+                SplitView.minimumWidth: 250
+                SplitView.preferredWidth: 320
                 color: bgPanel2
                 border.color: borderColor
 
@@ -1309,7 +1118,7 @@ ApplicationWindow {
                                     }
 
                                     Label {
-                                        text: "工具：" + activeViewportTool + "    缩放：" + Number(viewportZoom * 100).toFixed(0) + "%"
+                                        text: "模式：" + appController.current_mode
                                         color: textMuted
                                         font.pixelSize: 12
                                     }
@@ -1327,7 +1136,6 @@ ApplicationWindow {
                                 radius: 4
                                 color: viewportBg
                                 border.color: "#d6dde6"
-                                clip: true
 
                                 Repeater {
                                     model: 18
@@ -1359,52 +1167,19 @@ ApplicationWindow {
                                     acceptedButtons: Qt.LeftButton
                                     z: 0
 
-                                    onWheel: function(wheel) {
-                                        if ((wheel.modifiers & Qt.ControlModifier) !== 0) {
-                                            zoomViewportAt(wheel.x, wheel.y, wheel.angleDelta.y)
-                                            wheel.accepted = true
-                                        }
-                                    }
-
-                                    onPressed: function(mouse) {
-                                        if (activeViewportTool === "move") {
-                                            lastPanMouseX = mouse.x
-                                            lastPanMouseY = mouse.y
-                                            mouse.accepted = true
-                                        }
-                                    }
-
-                                    onPositionChanged: function(mouse) {
-                                        if (activeViewportTool === "move" && pressed) {
-                                            viewportPanX += mouse.x - lastPanMouseX
-                                            viewportPanY += mouse.y - lastPanMouseY
-                                            lastPanMouseX = mouse.x
-                                            lastPanMouseY = mouse.y
-                                            shell_status = "正在移动视图"
-                                            return
-                                        }
-
+                                    onPositionChanged: {
                                         if (window.viewportPointIsValid(mouse.x, mouse.y)) {
                                             window.cursorModelX = window.viewportToModelX(mouse.x)
                                             window.cursorModelY = window.viewportToModelY(mouse.y)
                                         }
                                     }
 
-                                    onClicked: function(mouse) {
+                                    onClicked: {
                                         if (!window.viewportPointIsValid(mouse.x, mouse.y))
                                             return
 
                                         window.cursorModelX = window.viewportToModelX(mouse.x)
                                         window.cursorModelY = window.viewportToModelY(mouse.y)
-
-                                        if (activeViewportTool === "delete") {
-                                            deleteCurrentNodeFromView()
-                                            return
-                                        }
-
-                                        if (activeViewportTool !== "add") {
-                                            return
-                                        }
 
                                         if (appController.current_mode !== "node") {
                                             shell_status = "当前不是节点模式，无法通过视口创建节点"
@@ -1443,7 +1218,7 @@ ApplicationWindow {
 
                                     Label {
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        text: "选择“添加”工具后，可在视口中点击创建节点；按住 Ctrl + 鼠标滚轮缩放"
+                                        text: "后续在这里接入背景图、节点、单元、约束、载荷与结果可视化"
                                         color: textMuted
                                     }
 
@@ -1477,12 +1252,7 @@ ApplicationWindow {
                                                 onClicked: {
                                                     appController.select_node(model.node_id)
                                                     syncSelectedNodeEditor()
-
-                                                    if (activeViewportTool === "delete") {
-                                                        deleteCurrentNodeFromView()
-                                                    } else {
-                                                        shell_status = "在视口中选中节点 " + model.node_id
-                                                    }
+                                                    shell_status = "在视口中选中节点 " + model.node_id
                                                 }
                                             }
                                         }
@@ -1501,7 +1271,7 @@ ApplicationWindow {
                                     anchors.right: parent.right
                                     anchors.bottom: parent.bottom
                                     anchors.margins: 10
-                                    width: 420
+                                    width: 330
                                     height: 28
                                     radius: 4
                                     color: "#eef2f7"
@@ -1510,19 +1280,15 @@ ApplicationWindow {
                                     Label {
                                         anchors.centerIn: parent
                                         text: appController.selected_node_exists
-                                              ? ("缩放: "
-                                                 + Number(viewportZoom * 100).toFixed(0)
-                                                 + "%   鼠标: X="
+                                              ? ("鼠标: X="
                                                  + Number(window.cursorModelX).toFixed(3)
                                                  + "  Y="
                                                  + Number(window.cursorModelY).toFixed(3)
-                                                 + "   |   节点 "
+                                                 + "   |   选中节点 "
                                                  + appController.selected_node_id
                                                  + "  (" + Number(appController.selected_node_x).toFixed(3)
                                                  + ", " + Number(appController.selected_node_y).toFixed(3) + ")")
-                                              : ("缩放: "
-                                                 + Number(viewportZoom * 100).toFixed(0)
-                                                 + "%   鼠标: X="
+                                              : ("鼠标: X="
                                                  + Number(window.cursorModelX).toFixed(3)
                                                  + "  Y="
                                                  + Number(window.cursorModelY).toFixed(3))
@@ -1604,11 +1370,9 @@ ApplicationWindow {
                                     ">> 当前状态：" + appController.status_text + "\n" +
                                     ">> 当前模式：" + appController.current_mode + "\n" +
                                     ">> 当前选择：" + selection_info + "\n" +
-                                    ">> 当前视口工具：" + activeViewportTool + "\n" +
-                                    ">> 视口缩放：" + Number(viewportZoom * 100).toFixed(0) + "%\n" +
                                     ">> 求解结果状态：" + (appController.solver_has_result ? "已有结果" : "暂无结果") + "\n" +
                                     ">> 提示：" + shell_status + "\n" +
-                                    ">> 说明：当前为工程软件界面骨架版，已增量接入节点编辑、缩放、平移、删除与折叠侧栏功能。"
+                                    ">> 说明：当前为工程软件界面骨架版，已增量接入节点编辑与求解接口。"
                             }
                         }
                     }
@@ -1616,10 +1380,8 @@ ApplicationWindow {
             }
 
             Rectangle {
-                id: rightPanel
-                visible: rightPanelVisible
-                SplitView.minimumWidth: rightPanelVisible ? 300 : 0
-                SplitView.preferredWidth: rightPanelVisible ? 360 : 0
+                SplitView.minimumWidth: 300
+                SplitView.preferredWidth: 360
                 color: bgPanel2
                 border.color: borderColor
 
@@ -1842,13 +1604,6 @@ ApplicationWindow {
                                                 shell_status = "已取消节点选中"
                                             }
                                         }
-                                    }
-
-                                    Button {
-                                        Layout.fillWidth: true
-                                        text: "删除当前节点"
-                                        enabled: appController.selected_node_exists
-                                        onClicked: deleteCurrentNodeFromView()
                                     }
 
                                     Item {
@@ -2135,18 +1890,6 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "工具：" + activeViewportTool
-                    color: textMain
-                    font.pixelSize: 12
-                }
-
-                Label {
-                    text: "缩放：" + Number(viewportZoom * 100).toFixed(0) + "%"
-                    color: textMain
-                    font.pixelSize: 12
-                }
-
-                Label {
                     Layout.fillWidth: true
                     text: "提示：" + shell_status
                     color: textMuted
@@ -2159,76 +1902,6 @@ ApplicationWindow {
                     color: textMain
                     font.pixelSize: 12
                 }
-            }
-        }
-    }
-
-    Rectangle {
-        id: leftPanelToggleHandle
-        z: 30
-        width: 22
-        height: 58
-        radius: 11
-        color: "#eef2f6"
-        border.color: borderColor
-        opacity: 0.94
-
-        x: leftPanelVisible ? leftPanel.width - width / 2 : 0
-        y: Math.max(104, window.height / 2 - height / 2)
-
-        Text {
-            anchors.centerIn: parent
-            text: leftPanelVisible ? "◀" : "▶"
-            color: textMuted
-            font.pixelSize: 14
-            font.bold: true
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-
-            onEntered: parent.color = accentSoft
-            onExited: parent.color = "#eef2f6"
-
-            onClicked: {
-                leftPanelVisible = !leftPanelVisible
-                shell_status = leftPanelVisible ? "已展开左侧栏" : "已隐藏左侧栏"
-            }
-        }
-    }
-
-    Rectangle {
-        id: rightPanelToggleHandle
-        z: 30
-        width: 22
-        height: 58
-        radius: 11
-        color: "#eef2f6"
-        border.color: borderColor
-        opacity: 0.94
-
-        x: rightPanelVisible ? window.width - rightPanel.width - width / 2 : window.width - width
-        y: Math.max(104, window.height / 2 - height / 2)
-
-        Text {
-            anchors.centerIn: parent
-            text: rightPanelVisible ? "▶" : "◀"
-            color: textMuted
-            font.pixelSize: 14
-            font.bold: true
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-
-            onEntered: parent.color = accentSoft
-            onExited: parent.color = "#eef2f6"
-
-            onClicked: {
-                rightPanelVisible = !rightPanelVisible
-                shell_status = rightPanelVisible ? "已展开右侧栏" : "已隐藏右侧栏"
             }
         }
     }
