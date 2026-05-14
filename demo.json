@@ -1,0 +1,77 @@
+{
+  "file_type": "fem2d_project",
+  "version": 1,
+  "model": {
+    "nodes": [
+      {
+        "id": 1,
+        "x": 1.1979949874686717,
+        "y": 1.8518518518518516
+      },
+      {
+        "id": 2,
+        "x": 2.3709273182957395,
+        "y": 1.9259259259259258
+      },
+      {
+        "id": 3,
+        "x": 1.9248120300751879,
+        "y": 0.8981481481481481
+      },
+      {
+        "id": 4,
+        "x": 1.25062656641604,
+        "y": 2.662037037037037
+      },
+      {
+        "id": 5,
+        "x": 1.9974937343358397,
+        "y": 2.8842592592592595
+      }
+    ],
+    "elements": [
+      {
+        "id": 1,
+        "node_ids": [
+          4,
+          5,
+          1
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      },
+      {
+        "id": 2,
+        "node_ids": [
+          5,
+          1,
+          2
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      },
+      {
+        "id": 3,
+        "node_ids": [
+          1,
+          2,
+          3
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      }
+    ],
+    "materials": [
+      {
+        "id": 1,
+        "name": "材料-1",
+        "young_modulus": 210000000000.0,
+        "poisson_ratio": 0.3,
+        "thickness": 0.01,
+        "plane_mode": "stress"
+      }
+    ],
+    "constraints": [],
+    "loads": []
+  }
+}
