@@ -185,11 +185,6 @@ class AppController(QObject):
     def _notify_boundary_data_changed(self) -> None:
         self.boundary_data_changed.emit()
 
-    def _clear_temp_element_selection(self) -> None:
-        if self._selected_element_node_ids:
-            self._selected_element_node_ids = []
-            self._notify_element_selection_changed()
-
     def _next_id(self, items) -> int:
         if not items:
             return 1
@@ -488,31 +483,6 @@ class AppController(QObject):
         return used_element_ids
 
     def _validate_model_before_solve(self) -> None:
-        if not self._model.nodes:
-            raise ValueError("当前模型没有节点")
-
-        if not self._model.elements:
-            raise ValueError("当前模型没有单元")
-
-        if not self._model.materials:
-            raise ValueError("当前模型没有材料")
-
-        if not self._model.constraints:
-            raise ValueError("当前模型没有位移约束，整体刚度矩阵将奇异")
-
-        has_effective_load = any(
-            abs(load.fx) > 1e-15 or abs(load.fy) > 1e-15
-            for load in self._model.loads
-        )
-        has_nonzero_prescribed_displacement = any(
-            (constraint.ux_fixed and abs(constraint.ux_value) > 1e-15)
-            or (constraint.uy_fixed and abs(constraint.uy_value) > 1e-15)
-            for constraint in self._model.constraints
-        )
-
-        if not has_effective_load and not has_nonzero_prescribed_displacement:
-            raise ValueError("当前模型既没有外载荷，也没有非零位移边界")
-
         for element in self._model.elements:
             if element.material_id is None:
                 raise ValueError(f"单元 {element.id} 尚未分配材料")
@@ -544,7 +514,6 @@ class AppController(QObject):
 
     @Slot()
     def set_node_mode(self) -> None:
-        self._clear_temp_element_selection()
         self.set_current_mode("node")
         self.set_status_text("已切换到节点模式")
 
@@ -660,7 +629,6 @@ class AppController(QObject):
             self.set_status_text(f"选中节点失败：不存在编号为 {node_id} 的节点")
             return False
 
-        self._clear_temp_element_selection()
         self._set_selected_node_id(node.id)
         self.set_current_mode("node")
         self.set_status_text(f"已选中节点 {node.id}")
@@ -1441,109 +1409,6 @@ class AppController(QObject):
             return
 
         self.set_load(target_node.id, 1000.0, 0.0)
-
-
-
-    def _von_mises_plane_stress(self, stress_x: float, stress_y: float, tau_xy: float) -> float:
-        value = stress_x * stress_x - stress_x * stress_y + stress_y * stress_y + 3.0 * tau_xy * tau_xy
-        return math.sqrt(max(value, 0.0))
-
-    @Slot(int, result="QVariantMap")
-    def get_node_result_by_id(self, node_id: int):
-        for row in self._node_result_rows:
-            if int(row.get("node_id", -1)) == int(node_id):
-                ux = float(row.get("ux", 0.0))
-                uy = float(row.get("uy", 0.0))
-                return {
-                    "node_id": int(node_id),
-                    "ux": ux,
-                    "uy": uy,
-                    "u_magnitude": math.sqrt(ux * ux + uy * uy),
-                    "has_result": True,
-                }
-
-        return {
-            "node_id": int(node_id),
-            "ux": 0.0,
-            "uy": 0.0,
-            "u_magnitude": 0.0,
-            "has_result": False,
-        }
-
-    @Slot(int, result="QVariantMap")
-    def get_element_result_by_id(self, element_id: int):
-        for row in self._element_result_rows:
-            if int(row.get("element_id", -1)) == int(element_id):
-                stress_x = float(row.get("stress_x", 0.0))
-                stress_y = float(row.get("stress_y", 0.0))
-                tau_xy = float(row.get("tau_xy", 0.0))
-                return {
-                    "element_id": int(element_id),
-                    "strain_x": float(row.get("strain_x", 0.0)),
-                    "strain_y": float(row.get("strain_y", 0.0)),
-                    "gamma_xy": float(row.get("gamma_xy", 0.0)),
-                    "stress_x": stress_x,
-                    "stress_y": stress_y,
-                    "tau_xy": tau_xy,
-                    "von_mises": self._von_mises_plane_stress(stress_x, stress_y, tau_xy),
-                    "has_result": True,
-                }
-
-        return {
-            "element_id": int(element_id),
-            "strain_x": 0.0,
-            "strain_y": 0.0,
-            "gamma_xy": 0.0,
-            "stress_x": 0.0,
-            "stress_y": 0.0,
-            "tau_xy": 0.0,
-            "von_mises": 0.0,
-            "has_result": False,
-        }
-
-    @Slot(result="QVariantMap")
-    def get_result_summary(self):
-        max_displacement = 0.0
-        max_displacement_node_id = -1
-        for row in self._node_result_rows:
-            ux = float(row.get("ux", 0.0))
-            uy = float(row.get("uy", 0.0))
-            magnitude = math.sqrt(ux * ux + uy * uy)
-            if magnitude > max_displacement:
-                max_displacement = magnitude
-                max_displacement_node_id = int(row.get("node_id", -1))
-
-        max_von_mises = 0.0
-        max_von_mises_element_id = -1
-        for row in self._element_result_rows:
-            stress_x = float(row.get("stress_x", 0.0))
-            stress_y = float(row.get("stress_y", 0.0))
-            tau_xy = float(row.get("tau_xy", 0.0))
-            von_mises = self._von_mises_plane_stress(stress_x, stress_y, tau_xy)
-            if von_mises > max_von_mises:
-                max_von_mises = von_mises
-                max_von_mises_element_id = int(row.get("element_id", -1))
-
-        return {
-            "has_result": self._solver_result is not None,
-            "node_result_count": len(self._node_result_rows),
-            "element_result_count": len(self._element_result_rows),
-            "max_displacement": max_displacement,
-            "max_displacement_node_id": max_displacement_node_id,
-            "max_von_mises": max_von_mises,
-            "max_von_mises_element_id": max_von_mises_element_id,
-        }
-
-    @Slot(result=bool)
-    def clear_solver_results_from_view(self) -> bool:
-        if self._solver_result is None:
-            self.set_status_text("当前没有求解结果可清除")
-            return False
-
-        self._clear_solver_results()
-        self.set_current_mode("edit")
-        self.set_status_text("已清除求解结果")
-        return True
 
     @Slot(result=bool)
     def solve_model(self) -> bool:

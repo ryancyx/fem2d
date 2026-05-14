@@ -265,136 +265,6 @@ ApplicationWindow {
         }
     }
 
-    function formatScientific(value, digits) {
-        if (!isFinite(value))
-            return "—"
-        return Number(value).toExponential(digits)
-    }
-
-    function displacementMagnitude(ux, uy) {
-        var x = Number(ux)
-        var y = Number(uy)
-        return Math.sqrt(x * x + y * y)
-    }
-
-    function vonMisesPlaneStress(stressX, stressY, tauXY) {
-        var sx = Number(stressX)
-        var sy = Number(stressY)
-        var txy = Number(tauXY)
-        return Math.sqrt(Math.max(0.0, sx * sx - sx * sy + sy * sy + 3.0 * txy * txy))
-    }
-
-    function findNodeResultRowById(nodeId) {
-        for (var i = 0; i < nodeResultModel.count; i++) {
-            var row = nodeResultModel.get(i)
-            if (row.node_id === nodeId)
-                return row
-        }
-        return null
-    }
-
-    function findElementResultRowById(elementId) {
-        for (var i = 0; i < elementResultModel.count; i++) {
-            var row = elementResultModel.get(i)
-            if (row.element_id === elementId)
-                return row
-        }
-        return null
-    }
-
-    function selectedNodeResultText() {
-        var row = findNodeResultRowById(selectedResultNodeId)
-        if (!row)
-            return "点击左侧结果表中的节点或单元行，可在这里查看详细后处理结果。"
-        return "已选择节点 N" + selectedResultNodeId + ": Ux=" + formatScientific(row.ux, 3) + ", Uy=" + formatScientific(row.uy, 3) + ", |U|=" + formatScientific(displacementMagnitude(row.ux, row.uy), 3)
-    }
-
-    function selectedElementResultText() {
-        var row = findElementResultRowById(selectedResultElementId)
-        if (!row)
-            return "点击左侧结果表中的节点或单元行，可在这里查看详细后处理结果。"
-        return "已选择单元 E" + selectedResultElementId + ": σx=" + formatScientific(row.stress_x, 2) + ", σy=" + formatScientific(row.stress_y, 2) + ", τxy=" + formatScientific(row.tau_xy, 2) + ", VM=" + formatScientific(vonMisesPlaneStress(row.stress_x, row.stress_y, row.tau_xy), 2)
-    }
-
-    function maxDisplacementMagnitude() {
-        var maxValue = 0.0
-        for (var i = 0; i < nodeResultModel.count; i++) {
-            var row = nodeResultModel.get(i)
-            maxValue = Math.max(maxValue, displacementMagnitude(row.ux, row.uy))
-        }
-        return maxValue
-    }
-
-    function maxDisplacementNodeId() {
-        var maxValue = -1.0
-        var nodeId = -1
-        for (var i = 0; i < nodeResultModel.count; i++) {
-            var row = nodeResultModel.get(i)
-            var value = displacementMagnitude(row.ux, row.uy)
-            if (value > maxValue) {
-                maxValue = value
-                nodeId = row.node_id
-            }
-        }
-        return nodeId
-    }
-
-    function maxVonMisesStress() {
-        var maxValue = 0.0
-        for (var i = 0; i < elementResultModel.count; i++) {
-            var row = elementResultModel.get(i)
-            maxValue = Math.max(maxValue, vonMisesPlaneStress(row.stress_x, row.stress_y, row.tau_xy))
-        }
-        return maxValue
-    }
-
-    function maxVonMisesElementId() {
-        var maxValue = -1.0
-        var elementId = -1
-        for (var i = 0; i < elementResultModel.count; i++) {
-            var row = elementResultModel.get(i)
-            var value = vonMisesPlaneStress(row.stress_x, row.stress_y, row.tau_xy)
-            if (value > maxValue) {
-                maxValue = value
-                elementId = row.element_id
-            }
-        }
-        return elementId
-    }
-
-    function selectNodeResultRow(nodeId) {
-        selectedResultNodeId = nodeId
-        selectedResultElementId = -1
-        appController.select_node(nodeId)
-        syncSelectedNodeEditor()
-        shell_status = "已定位节点结果 N" + nodeId
-    }
-
-    function selectElementResultRow(elementId) {
-        selectedResultElementId = elementId
-        selectedResultNodeId = -1
-        appController.select_element(elementId)
-        syncSelectedElementEditor()
-        shell_status = "已定位单元结果 E" + elementId
-    }
-
-    function clearResultSelection() {
-        selectedResultNodeId = -1
-        selectedResultElementId = -1
-        shell_status = "已清除结果选择"
-    }
-
-    function clearResultsFromView() {
-        var ok = appController.clear_solver_results_from_view ? appController.clear_solver_results_from_view() : false
-        shell_status = appController.status_text
-        if (ok) {
-            selectedResultNodeId = -1
-            selectedResultElementId = -1
-            refreshNodeResultModel()
-            refreshElementResultModel()
-        }
-    }
-
     function refreshSelectionInfo() {
         if (appController.selected_element_exists && appController.current_mode === "element") {
             selection_info = "单元 " + appController.selected_element_id
@@ -624,8 +494,6 @@ ApplicationWindow {
     property var loadRowsCache: []
     property int selectedMaterialIdForEdit: -1
     property int rightInspectorPageHint: 0
-    property int selectedResultNodeId: -1
-    property int selectedResultElementId: -1
 
 
     ListModel {
@@ -683,8 +551,6 @@ ApplicationWindow {
         function onSolverResultsChanged() {
             refreshNodeResultModel()
             refreshElementResultModel()
-            if (appController.solver_has_result)
-                leftSectionTabs.currentIndex = 1
         }
     }
 
@@ -1445,12 +1311,9 @@ ApplicationWindow {
                                     onClicked: {
                                         var ok = appController.solve_model()
                                         if (ok) {
-                                            shell_status = "求解完成，已切换到结果页"
+                                            shell_status = "求解完成"
                                             refreshNodeResultModel()
                                             refreshElementResultModel()
-                                            selectedResultNodeId = -1
-                                            selectedResultElementId = -1
-                                            leftSectionTabs.currentIndex = 1
                                         } else {
                                             shell_status = "求解失败"
                                         }
@@ -1459,10 +1322,7 @@ ApplicationWindow {
 
                                 HeaderActionButton {
                                     text: "结果"
-                                    onClicked: {
-                                        leftSectionTabs.currentIndex = 1
-                                        shell_status = "结果查看：左侧已切换到后处理结果页"
-                                    }
+                                    onClicked: shell_status = "结果查看：请查看右侧结果摘要"
                                 }
                             }
                         }
@@ -2137,7 +1997,6 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
-                            ScrollBar.vertical.policy: ScrollBar.AlwaysOff
 
                             ColumnLayout {
                                 width: Math.max(0, leftPanel.width - 28)
@@ -2148,15 +2007,15 @@ ApplicationWindow {
                                     radius: 12
                                     color: bgPanel3
                                     border.color: borderColor
-                                    implicitHeight: 214
+                                    implicitHeight: 230
 
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 12
-                                        spacing: 7
+                                        spacing: 8
 
                                         Label {
-                                            text: "后处理总览"
+                                            text: "节点结果"
                                             color: textMain
                                             font.pixelSize: 13
                                             font.bold: true
@@ -2164,77 +2023,12 @@ ApplicationWindow {
 
                                         Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
 
-                                        Label {
-                                            Layout.fillWidth: true
-                                            wrapMode: Text.WordWrap
-                                            text: appController.solver_has_result ? "当前模型已有求解结果。可在下方选择节点位移或单元应力结果，右侧检查器会显示详细数值。" : "暂无求解结果。请先完成材料、约束、载荷设置并点击求解。"
-                                            color: appController.solver_has_result ? textMain : textMuted
-                                        }
-
-                                        Label { text: "节点结果：" + nodeResultModel.count + "    单元结果：" + elementResultModel.count; color: textMain }
-                                        Label { text: "最大位移：" + formatScientific(maxDisplacementMagnitude(), 3) + "  @ N" + maxDisplacementNodeId(); color: textMain }
-                                        Label { text: "最大等效应力：" + formatScientific(maxVonMisesStress(), 3) + "  @ E" + maxVonMisesElementId(); color: textMain }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-
-                                            PanelActionButton {
-                                                Layout.fillWidth: true
-                                                text: "刷新结果"
-                                                onClicked: {
-                                                    refreshNodeResultModel()
-                                                    refreshElementResultModel()
-                                                    shell_status = "已刷新结果表"
-                                                }
-                                            }
-
-                                            PanelActionButton {
-                                                Layout.fillWidth: true
-                                                text: "清除选择"
-                                                onClicked: clearResultSelection()
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    radius: 12
-                                    color: bgPanel3
-                                    border.color: borderColor
-                                    implicitHeight: 285
-
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 12
-                                        spacing: 8
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Label { text: "节点位移结果"; color: textMain; font.pixelSize: 13; font.bold: true }
-                                            Item { Layout.fillWidth: true }
-                                            Label { text: selectedResultNodeId === -1 ? "未选择" : "N" + selectedResultNodeId; color: textMuted; font.pixelSize: 12 }
-                                        }
-
-                                        Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            Label { text: "节点"; Layout.preferredWidth: 42; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "Ux"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "Uy"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "|U|"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                        }
-
                                         Rectangle {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
                                             color: "#fbfcfc"
                                             border.color: "#d4dbe3"
-                                            radius: 6
-                                            clip: true
+                                            radius: 4
 
                                             ListView {
                                                 anchors.fill: parent
@@ -2245,26 +2039,19 @@ ApplicationWindow {
 
                                                 delegate: Rectangle {
                                                     width: ListView.view.width
-                                                    height: 36
-                                                    radius: 8
-                                                    color: model.node_id === selectedResultNodeId ? accentSoft : (index % 2 === 0 ? "#fcfcfc" : "#f5f7f9")
-                                                    border.color: model.node_id === selectedResultNodeId ? accent : "#e1e7ee"
-
-                                                    MouseArea {
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        onClicked: selectNodeResultRow(model.node_id)
-                                                    }
+                                                    height: 30
+                                                    radius: 4
+                                                    color: index % 2 === 0 ? "#fcfcfc" : "#f5f7f9"
+                                                    border.color: "#e1e7ee"
 
                                                     RowLayout {
                                                         anchors.fill: parent
-                                                        anchors.leftMargin: 8
-                                                        anchors.rightMargin: 8
+                                                        anchors.leftMargin: 6
+                                                        anchors.rightMargin: 6
                                                         spacing: 8
-                                                        Label { text: "N" + model.node_id; Layout.preferredWidth: 42; color: textMain; font.bold: model.node_id === selectedResultNodeId }
-                                                        Label { text: formatScientific(model.ux, 3); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
-                                                        Label { text: formatScientific(model.uy, 3); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
-                                                        Label { text: formatScientific(displacementMagnitude(model.ux, model.uy), 3); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
+                                                        Label { text: "N" + model.node_id; Layout.preferredWidth: 44; color: textMain }
+                                                        Label { text: "Ux=" + Number(model.ux).toExponential(3); Layout.fillWidth: true; color: textMain }
+                                                        Label { text: "Uy=" + Number(model.uy).toExponential(3); Layout.fillWidth: true; color: textMain }
                                                     }
                                                 }
 
@@ -2273,7 +2060,13 @@ ApplicationWindow {
 
                                             Component {
                                                 id: emptyNodeResultLabelLeft
-                                                Label { width: parent ? parent.width : 200; text: "暂无节点位移结果"; horizontalAlignment: Text.AlignHCenter; color: textMuted; topPadding: 20 }
+                                                Label {
+                                                    width: parent ? parent.width : 200
+                                                    text: "暂无节点位移结果"
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    color: textMuted
+                                                    topPadding: 20
+                                                }
                                             }
                                         }
                                     }
@@ -2284,39 +2077,28 @@ ApplicationWindow {
                                     radius: 12
                                     color: bgPanel3
                                     border.color: borderColor
-                                    implicitHeight: 310
+                                    implicitHeight: 240
 
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 12
                                         spacing: 8
 
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Label { text: "单元应力 / 应变结果"; color: textMain; font.pixelSize: 13; font.bold: true }
-                                            Item { Layout.fillWidth: true }
-                                            Label { text: selectedResultElementId === -1 ? "未选择" : "E" + selectedResultElementId; color: textMuted; font.pixelSize: 12 }
+                                        Label {
+                                            text: "单元结果"
+                                            color: textMain
+                                            font.pixelSize: 13
+                                            font.bold: true
                                         }
 
                                         Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
-
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 8
-                                            Label { text: "单元"; Layout.preferredWidth: 42; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "σx"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "σy"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "τxy"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                            Label { text: "VM"; Layout.fillWidth: true; color: textMuted; font.pixelSize: 11 }
-                                        }
 
                                         Rectangle {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
                                             color: "#fbfcfc"
                                             border.color: "#d4dbe3"
-                                            radius: 6
-                                            clip: true
+                                            radius: 4
 
                                             ListView {
                                                 anchors.fill: parent
@@ -2327,27 +2109,19 @@ ApplicationWindow {
 
                                                 delegate: Rectangle {
                                                     width: ListView.view.width
-                                                    height: 38
-                                                    radius: 8
-                                                    color: model.element_id === selectedResultElementId ? accentSoft : (index % 2 === 0 ? "#fcfcfc" : "#f5f7f9")
-                                                    border.color: model.element_id === selectedResultElementId ? accent : "#e1e7ee"
-
-                                                    MouseArea {
-                                                        anchors.fill: parent
-                                                        hoverEnabled: true
-                                                        onClicked: selectElementResultRow(model.element_id)
-                                                    }
+                                                    height: 32
+                                                    radius: 4
+                                                    color: index % 2 === 0 ? "#fcfcfc" : "#f5f7f9"
+                                                    border.color: "#e1e7ee"
 
                                                     RowLayout {
                                                         anchors.fill: parent
-                                                        anchors.leftMargin: 8
-                                                        anchors.rightMargin: 8
+                                                        anchors.leftMargin: 6
+                                                        anchors.rightMargin: 6
                                                         spacing: 8
-                                                        Label { text: "E" + model.element_id; Layout.preferredWidth: 42; color: textMain; font.bold: model.element_id === selectedResultElementId }
-                                                        Label { text: formatScientific(model.stress_x, 2); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
-                                                        Label { text: formatScientific(model.stress_y, 2); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
-                                                        Label { text: formatScientific(model.tau_xy, 2); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
-                                                        Label { text: formatScientific(vonMisesPlaneStress(model.stress_x, model.stress_y, model.tau_xy), 2); Layout.fillWidth: true; color: textMain; font.pixelSize: 11 }
+                                                        Label { text: "E" + model.element_id; Layout.preferredWidth: 44; color: textMain }
+                                                        Label { text: "σx=" + Number(model.stress_x).toExponential(2); Layout.fillWidth: true; color: textMain }
+                                                        Label { text: "σy=" + Number(model.stress_y).toExponential(2); Layout.fillWidth: true; color: textMain }
                                                     }
                                                 }
 
@@ -2356,7 +2130,13 @@ ApplicationWindow {
 
                                             Component {
                                                 id: emptyElementResultLabelLeft
-                                                Label { width: parent ? parent.width : 200; text: "暂无单元结果"; horizontalAlignment: Text.AlignHCenter; color: textMuted; topPadding: 20 }
+                                                Label {
+                                                    width: parent ? parent.width : 200
+                                                    text: "暂无单元结果"
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    color: textMuted
+                                                    topPadding: 20
+                                                }
                                             }
                                         }
                                     }
@@ -3202,57 +2982,6 @@ ApplicationWindow {
                                     Label { text: "当前模式：" + appController.current_mode; color: textMain }
                                     Label { text: "当前选择：" + selection_info; color: textMain }
                                     Label { text: "结果状态：" + (appController.solver_has_result ? "已有结果" : "暂无结果"); color: textMain }
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                radius: 12
-                                color: bgPanel3
-                                border.color: borderColor
-                                visible: appController.solver_has_result
-                                implicitHeight: visible ? 284 : 0
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 12
-                                    spacing: 7
-
-                                    Label { text: "阶段9 · 后处理检查器"; color: textMain; font.pixelSize: 13; font.bold: true }
-                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
-                                    Label { text: "节点结果：" + nodeResultModel.count + "    单元结果：" + elementResultModel.count; color: textMain }
-                                    Label { text: "最大位移：" + formatScientific(maxDisplacementMagnitude(), 3) + "  @ N" + maxDisplacementNodeId(); color: textMain }
-                                    Label { text: "最大等效应力：" + formatScientific(maxVonMisesStress(), 3) + "  @ E" + maxVonMisesElementId(); color: textMain }
-                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        wrapMode: Text.WordWrap
-                                        text: selectedResultNodeId !== -1 ? selectedNodeResultText() : (selectedResultElementId !== -1 ? selectedElementResultText() : "点击左侧结果表中的节点或单元行，可在这里查看详细后处理结果。")
-                                        color: textMain
-                                    }
-
-                                    Item { Layout.fillHeight: true }
-
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-
-                                        PanelActionButton {
-                                            Layout.fillWidth: true
-                                            text: "查看结果页"
-                                            onClicked: {
-                                                leftSectionTabs.currentIndex = 1
-                                                shell_status = "已切换到后处理结果页"
-                                            }
-                                        }
-
-                                        PanelActionButton {
-                                            Layout.fillWidth: true
-                                            text: "清除结果"
-                                            onClicked: clearResultsFromView()
-                                        }
-                                    }
                                 }
                             }
 
