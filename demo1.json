@@ -1,0 +1,117 @@
+{
+  "file_type": "fem2d_project",
+  "version": 1,
+  "model": {
+    "nodes": [
+      {
+        "id": 1,
+        "x": 1.1979949874686717,
+        "y": 1.8518518518518516
+      },
+      {
+        "id": 2,
+        "x": 2.3709273182957395,
+        "y": 1.9259259259259258
+      },
+      {
+        "id": 3,
+        "x": 1.9248120300751879,
+        "y": 0.8981481481481481
+      },
+      {
+        "id": 4,
+        "x": 1.25062656641604,
+        "y": 2.662037037037037
+      },
+      {
+        "id": 5,
+        "x": 1.9974937343358397,
+        "y": 2.8842592592592595
+      }
+    ],
+    "elements": [
+      {
+        "id": 1,
+        "node_ids": [
+          4,
+          1,
+          5
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      },
+      {
+        "id": 2,
+        "node_ids": [
+          5,
+          1,
+          2
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      },
+      {
+        "id": 3,
+        "node_ids": [
+          1,
+          3,
+          2
+        ],
+        "material_id": 1,
+        "element_type": "CST"
+      }
+    ],
+    "materials": [
+      {
+        "id": 1,
+        "name": "材料-1",
+        "young_modulus": 210000000000.0,
+        "poisson_ratio": 0.3,
+        "thickness": 0.01,
+        "plane_mode": "stress"
+      }
+    ],
+    "constraints": [
+      {
+        "id": 1,
+        "node_id": 3,
+        "ux_fixed": true,
+        "uy_fixed": true,
+        "ux_value": 0.0,
+        "uy_value": 0.0
+      },
+      {
+        "id": 2,
+        "node_id": 2,
+        "ux_fixed": true,
+        "uy_fixed": true,
+        "ux_value": 0.0,
+        "uy_value": 0.0
+      },
+      {
+        "id": 3,
+        "node_id": 1,
+        "ux_fixed": true,
+        "uy_fixed": true,
+        "ux_value": 0.0,
+        "uy_value": 0.0
+      }
+    ],
+    "loads": [
+      {
+        "id": 1,
+        "node_id": 5,
+        "fx": 0.0,
+        "fy": 90.0,
+        "load_type": "nodal"
+      },
+      {
+        "id": 2,
+        "node_id": 4,
+        "fx": 0.0,
+        "fy": 78.0,
+        "load_type": "nodal"
+      }
+    ]
+  }
+}

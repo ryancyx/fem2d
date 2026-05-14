@@ -1,3 +1,4 @@
+import csv
 import json
 import math
 from pathlib import Path
@@ -199,7 +200,7 @@ class AppController(QObject):
         self._notify_boundary_data_changed()
         self._notify_solver_results_changed()
 
-    def _project_path_from_qml(self, file_path) -> Path:
+    def _path_from_qml(self, file_path, default_suffix: str) -> Path:
         if file_path is None:
             raise ValueError("文件路径为空")
 
@@ -218,9 +219,15 @@ class AppController(QObject):
 
         path = Path(raw).expanduser()
         if path.suffix == "":
-            path = path.with_suffix(".json")
+            path = path.with_suffix(default_suffix)
 
         return path
+
+    def _project_path_from_qml(self, file_path) -> Path:
+        return self._path_from_qml(file_path, ".json")
+
+    def _csv_path_from_qml(self, file_path) -> Path:
+        return self._path_from_qml(file_path, ".csv")
 
     def _reset_runtime_state_after_project_change(self) -> None:
         self._selected_node_id = None
@@ -499,16 +506,51 @@ class AppController(QObject):
             raise ValueError(f"不存在编号为 {node_id} 的节点")
         return float(node.x), float(node.y)
 
-    def _are_three_nodes_collinear(self, node_ids: list[int]) -> bool:
+    def _signed_twice_area_by_node_ids(self, node_ids: list[int]) -> float:
         if len(node_ids) != 3:
-            raise ValueError("共线检查必须传入3个节点")
+            raise ValueError("面积计算必须传入3个节点")
 
         x1, y1 = self._get_node_coords_by_id(node_ids[0])
         x2, y2 = self._get_node_coords_by_id(node_ids[1])
         x3, y3 = self._get_node_coords_by_id(node_ids[2])
 
-        twice_area = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+        return (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)
+
+    def _are_three_nodes_collinear(self, node_ids: list[int]) -> bool:
+        twice_area = self._signed_twice_area_by_node_ids(node_ids)
         return abs(twice_area) < 1e-12
+
+    def _normalize_element_node_order_to_ccw(self, node_ids: list[int]) -> list[int]:
+        """
+        将三角形单元节点顺序统一修正为逆时针。
+
+        CST 单元的面积公式采用有向面积，若节点顺序为顺时针，面积为负，
+        后续刚度矩阵计算会失败。因此这里在创建/读取工程时统一做一次规范化。
+        """
+        if len(node_ids) != 3:
+            raise ValueError("CST 单元必须包含3个节点")
+
+        twice_area = self._signed_twice_area_by_node_ids(node_ids)
+        if abs(twice_area) < 1e-12:
+            raise ValueError("所选 3 个节点共线，不能构成三角形单元")
+
+        normalized = list(node_ids)
+        if twice_area < 0.0:
+            normalized[1], normalized[2] = normalized[2], normalized[1]
+
+        return normalized
+
+    def _normalize_all_element_node_orders_to_ccw(self) -> int:
+        fixed_count = 0
+
+        for element in self._model.elements:
+            original = list(element.node_ids)
+            normalized = self._normalize_element_node_order_to_ccw(original)
+            if normalized != original:
+                element.node_ids = normalized
+                fixed_count += 1
+
+        return fixed_count
 
     def _element_with_same_nodes_exists(self, node_ids: list[int]) -> bool:
         target = tuple(sorted(node_ids))
@@ -583,9 +625,13 @@ class AppController(QObject):
             loaded_model = FEMModel.from_dict(model_data)
 
             self._model = loaded_model
+            fixed_count = self._normalize_all_element_node_orders_to_ccw()
             self._current_project_path = str(path)
             self._reset_runtime_state_after_project_change()
-            self.set_status_text(f"已打开工程：{path.name}")
+            if fixed_count > 0:
+                self.set_status_text(f"已打开工程：{path.name}，并自动修正 {fixed_count} 个单元节点顺序")
+            else:
+                self.set_status_text(f"已打开工程：{path.name}")
             self._notify_all_model_data_changed()
             return True
 
@@ -941,8 +987,10 @@ class AppController(QObject):
 
         node_ids = list(self._selected_element_node_ids)
 
-        if self._are_three_nodes_collinear(node_ids):
-            self.set_status_text("创建单元失败：所选 3 个节点共线，不能构成三角形单元")
+        try:
+            node_ids = self._normalize_element_node_order_to_ccw(node_ids)
+        except ValueError as exc:
+            self.set_status_text(f"创建单元失败：{exc}")
             return False
 
         if self._element_with_same_nodes_exists(node_ids):
@@ -1458,6 +1506,12 @@ class AppController(QObject):
         last_three_nodes = self._model.nodes[-3:]
         node_ids = [node.id for node in last_three_nodes]
 
+        try:
+            node_ids = self._normalize_element_node_order_to_ccw(node_ids)
+        except ValueError as exc:
+            self.set_status_text(f"创建测试单元失败：{exc}")
+            return
+
         element = Element(
             id=element_id,
             node_ids=node_ids,
@@ -1510,9 +1564,96 @@ class AppController(QObject):
 
         self.set_load(target_node.id, 1000.0, 0.0)
 
+
+    def _von_mises_plane_stress(self, stress_x: float, stress_y: float, tau_xy: float) -> float:
+        value = stress_x * stress_x - stress_x * stress_y + stress_y * stress_y + 3.0 * tau_xy * tau_xy
+        return math.sqrt(max(value, 0.0))
+
+    @Slot("QVariant", result=bool)
+    @Slot(str, result=bool)
+    def export_node_results_to_csv(self, file_path) -> bool:
+        try:
+            if self._solver_result is None or not self._node_result_rows:
+                raise ValueError("当前没有节点位移结果可导出，请先完成求解")
+
+            path = self._csv_path_from_qml(file_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            with path.open("w", encoding="utf-8-sig", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow(["node_id", "ux", "uy", "displacement_magnitude"])
+
+                for row in sorted(self._node_result_rows, key=lambda item: int(item.get("node_id", -1))):
+                    node_id = int(row.get("node_id", -1))
+                    ux = float(row.get("ux", 0.0))
+                    uy = float(row.get("uy", 0.0))
+                    magnitude = math.sqrt(ux * ux + uy * uy)
+                    writer.writerow([node_id, ux, uy, magnitude])
+
+            self.set_status_text(f"已导出节点结果：{path.name}")
+            return True
+
+        except Exception as exc:
+            self.set_status_text(f"导出节点结果失败：{exc}")
+            return False
+
+    @Slot("QVariant", result=bool)
+    @Slot(str, result=bool)
+    def export_element_results_to_csv(self, file_path) -> bool:
+        try:
+            if self._solver_result is None or not self._element_result_rows:
+                raise ValueError("当前没有单元应力应变结果可导出，请先完成求解")
+
+            path = self._csv_path_from_qml(file_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            with path.open("w", encoding="utf-8-sig", newline="") as file:
+                writer = csv.writer(file)
+                writer.writerow([
+                    "element_id",
+                    "strain_x",
+                    "strain_y",
+                    "gamma_xy",
+                    "stress_x",
+                    "stress_y",
+                    "tau_xy",
+                    "von_mises",
+                ])
+
+                for row in sorted(self._element_result_rows, key=lambda item: int(item.get("element_id", -1))):
+                    element_id = int(row.get("element_id", -1))
+                    strain_x = float(row.get("strain_x", 0.0))
+                    strain_y = float(row.get("strain_y", 0.0))
+                    gamma_xy = float(row.get("gamma_xy", 0.0))
+                    stress_x = float(row.get("stress_x", 0.0))
+                    stress_y = float(row.get("stress_y", 0.0))
+                    tau_xy = float(row.get("tau_xy", 0.0))
+                    von_mises = self._von_mises_plane_stress(stress_x, stress_y, tau_xy)
+
+                    writer.writerow([
+                        element_id,
+                        strain_x,
+                        strain_y,
+                        gamma_xy,
+                        stress_x,
+                        stress_y,
+                        tau_xy,
+                        von_mises,
+                    ])
+
+            self.set_status_text(f"已导出单元结果：{path.name}")
+            return True
+
+        except Exception as exc:
+            self.set_status_text(f"导出单元结果失败：{exc}")
+            return False
+
     @Slot(result=bool)
     def solve_model(self) -> bool:
         try:
+            fixed_count = self._normalize_all_element_node_orders_to_ccw()
+            if fixed_count > 0:
+                self._notify_element_data_changed()
             self._validate_model_before_solve()
             solver_result = solve_linear_static(self._model)
 

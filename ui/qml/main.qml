@@ -83,6 +83,36 @@ ApplicationWindow {
         }
     }
 
+    FileDialog {
+        id: exportNodeResultsDialog
+        title: "导出节点位移结果"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["CSV 文件 (*.csv)", "所有文件 (*)"]
+
+        onAccepted: {
+            var ok = appController.export_node_results_to_csv(selectedFile)
+            shell_status = appController.status_text
+            if (ok) {
+                refreshResultModels()
+            }
+        }
+    }
+
+    FileDialog {
+        id: exportElementResultsDialog
+        title: "导出单元应力应变结果"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["CSV 文件 (*.csv)", "所有文件 (*)"]
+
+        onAccepted: {
+            var ok = appController.export_element_results_to_csv(selectedFile)
+            shell_status = appController.status_text
+            if (ok) {
+                refreshResultModels()
+            }
+        }
+    }
+
     function clamp(value, minValue, maxValue) {
         return Math.max(minValue, Math.min(maxValue, value))
     }
@@ -2798,6 +2828,55 @@ ApplicationWindow {
                                     Label { text: "当前模式：" + appController.current_mode; color: textMain }
                                     Label { text: "当前选择：" + selection_info; color: textMain }
                                     Label { text: "结果状态：" + (appController.solver_has_result ? "已有结果" : "暂无结果"); color: textMain }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                radius: 12
+                                color: bgPanel3
+                                border.color: borderColor
+                                implicitHeight: 154
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 8
+
+                                    Label {
+                                        text: "导出相关"
+                                        color: textMain
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                    }
+
+                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                        text: appController.solver_has_result ? "当前已有求解结果，可导出 CSV 文件。" : "请先完成求解，再导出节点位移与单元应力应变结果。"
+                                        color: textMuted
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "导出节点结果"
+                                            enabled: appController.solver_has_result
+                                            onClicked: exportNodeResultsDialog.open()
+                                        }
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "导出单元结果"
+                                            enabled: appController.solver_has_result
+                                            onClicked: exportElementResultsDialog.open()
+                                        }
+                                    }
                                 }
                             }
 
