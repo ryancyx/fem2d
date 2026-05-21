@@ -68,7 +68,8 @@
         "young_modulus": 210000000000.0,
         "poisson_ratio": 0.3,
         "thickness": 0.01,
-        "plane_mode": "stress"
+        "plane_mode": "stress",
+        "color": "#8FB7D8"
       }
     ],
     "constraints": [
@@ -113,5 +114,15 @@
         "load_type": "nodal"
       }
     ]
-  }
+  },
+  "distributed_loads": [
+    {
+      "id": 1,
+      "element_id": 2,
+      "local_edge_index": 1,
+      "qx": 0.0,
+      "qy": -88.0,
+      "load_type": "edge_uniform"
+    }
+  ]
 }

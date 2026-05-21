@@ -51,6 +51,9 @@ ApplicationWindow {
     property real maxViewportZoom: 20.0
     property real lastPanMouseX: 0.0
     property real lastPanMouseY: 0.0
+    property bool viewportPanActive: false
+    property bool viewportPanMoved: false
+
 
     FileDialog {
         id: openProjectDialog
@@ -110,6 +113,17 @@ ApplicationWindow {
             if (ok) {
                 refreshResultModels()
             }
+        }
+    }
+
+    FileDialog {
+        id: exportContourImageDialog
+        title: "导出" + contourTitle
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PNG 图像 (*.png)", "所有文件 (*)"]
+
+        onAccepted: {
+            saveContourImageToFile(selectedFile)
         }
     }
 
@@ -190,6 +204,37 @@ ApplicationWindow {
         return null
     }
 
+    function findElementRowById(elementId) {
+        for (var i = 0; i < elementRowsCache.length; i++) {
+            var row = elementRowsCache[i]
+            if (row.element_id == elementId || row.id == elementId)
+                return row
+        }
+        return null
+    }
+
+    function edgeNodeIdsForElementRow(elementRow, edgeIndex) {
+        if (!elementRow || !elementRow.node_ids || elementRow.node_ids.length !== 3)
+            return []
+
+        if (edgeIndex === 1)
+            return [elementRow.node_ids[1], elementRow.node_ids[2]]
+        if (edgeIndex === 2)
+            return [elementRow.node_ids[2], elementRow.node_ids[0]]
+        return [elementRow.node_ids[0], elementRow.node_ids[1]]
+    }
+
+    function refreshDistributedLoadEdgeHighlight() {
+        if (typeof distributedLoadEdgeCombo !== "undefined") {
+            selectedDistributedLoadEdgeIndex = distributedLoadEdgeCombo.currentIndex >= 0 ? distributedLoadEdgeCombo.currentIndex : 0
+        }
+
+        boundaryVisualVersion += 1
+
+        if (elementCanvas)
+            elementCanvas.requestPaint()
+    }
+
     function refreshElementModel() {
         var rows = appController.get_element_rows()
         var copy = []
@@ -198,13 +243,77 @@ ApplicationWindow {
                 element_id: rows[i].id,
                 node_ids: rows[i].node_ids,
                 material_id: rows[i].material_id,
-                element_type: rows[i].element_type
+                element_type: rows[i].element_type,
+                material_color: rows[i].material_color || "#AEB8C2",
+                fill_color: rows[i].fill_color || "#dbe6fb99",
+                selected_fill_color: rows[i].selected_fill_color || "#c9dcffbb"
             })
         }
         elementRowsCache = copy
 
         if (elementCanvas)
             elementCanvas.requestPaint()
+    }
+
+    function refreshBoundaryModel() {
+        var constraintRows = appController.get_constraint_rows ? appController.get_constraint_rows() : appController.get_constraints()
+        var constraintCopy = []
+        for (var i = 0; i < constraintRows.length; i++) {
+            constraintCopy.push({
+                constraint_id: constraintRows[i].id,
+                node_id: constraintRows[i].node_id,
+                ux_fixed: constraintRows[i].ux_fixed,
+                uy_fixed: constraintRows[i].uy_fixed,
+                ux_value: constraintRows[i].ux_value,
+                uy_value: constraintRows[i].uy_value
+            })
+        }
+        constraintRowsCache = constraintCopy
+
+        var loadRows = appController.get_load_rows ? appController.get_load_rows() : appController.get_loads()
+        var loadCopy = []
+        for (var j = 0; j < loadRows.length; j++) {
+            loadCopy.push({
+                load_id: loadRows[j].id,
+                node_id: loadRows[j].node_id,
+                fx: loadRows[j].fx,
+                fy: loadRows[j].fy,
+                load_type: loadRows[j].load_type
+            })
+        }
+        loadRowsCache = loadCopy
+
+        var distributedRows = appController.get_distributed_load_rows ? appController.get_distributed_load_rows() : []
+        var distributedCopy = []
+        for (var k = 0; k < distributedRows.length; k++) {
+            distributedCopy.push({
+                distributed_load_id: distributedRows[k].id,
+                element_id: distributedRows[k].element_id,
+                local_edge_index: distributedRows[k].local_edge_index,
+                node_i_id: distributedRows[k].node_i_id,
+                node_j_id: distributedRows[k].node_j_id,
+                qx: distributedRows[k].qx,
+                qy: distributedRows[k].qy,
+                load_type: distributedRows[k].load_type
+            })
+        }
+        distributedLoadRowsCache = distributedCopy
+        boundaryVisualVersion += 1
+
+        if (elementCanvas)
+            elementCanvas.requestPaint()
+    }
+
+    function constraintRowByNodeId(nodeId) {
+        for (var i = 0; i < constraintRowsCache.length; i++) {
+            if (constraintRowsCache[i].node_id === nodeId)
+                return constraintRowsCache[i]
+        }
+        return null
+    }
+
+    function hasConstraintForNode(nodeId) {
+        return constraintRowByNodeId(nodeId) !== null
     }
 
     function refreshMaterialModel() {
@@ -217,7 +326,8 @@ ApplicationWindow {
                 young_modulus: rows[i].young_modulus,
                 poisson_ratio: rows[i].poisson_ratio,
                 thickness: rows[i].thickness,
-                plane_mode: rows[i].plane_mode
+                plane_mode: rows[i].plane_mode,
+                material_color: rows[i].color || "#AEB8C2"
             })
         }
         materialRowsCache = copy
@@ -294,6 +404,294 @@ ApplicationWindow {
         for (var i = 0; i < rows.length; i++) {
             elementResultModel.append(rows[i])
         }
+
+        if (contourOverlayVisible && contourCanvas)
+            contourCanvas.requestPaint()
+    }
+
+    function nodeResultRowById(nodeId) {
+        for (var i = 0; i < nodeResultModel.count; i++) {
+            var row = nodeResultModel.get(i)
+            if (row.node_id === nodeId || row.id === nodeId)
+                return row
+        }
+        return null
+    }
+
+    function elementResultRowById(elementId) {
+        for (var i = 0; i < elementResultModel.count; i++) {
+            var row = elementResultModel.get(i)
+            if (row.element_id === elementId || row.id === elementId)
+                return row
+        }
+        return null
+    }
+
+    function displacementMagnitudeByNodeId(nodeId) {
+        var row = nodeResultRowById(nodeId)
+        if (!row)
+            return NaN
+
+        var ux = Number(row.ux)
+        var uy = Number(row.uy)
+        if (!isFinite(ux) || !isFinite(uy))
+            return NaN
+
+        return Math.sqrt(ux * ux + uy * uy)
+    }
+
+    function vonMisesByElementId(elementId) {
+        var row = elementResultRowById(elementId)
+        if (!row)
+            return NaN
+
+        var sx = Number(row.stress_x)
+        var sy = Number(row.stress_y)
+        var txy = Number(row.tau_xy)
+        if (!isFinite(sx) || !isFinite(sy) || !isFinite(txy))
+            return NaN
+
+        var value = sx * sx - sx * sy + sy * sy + 3.0 * txy * txy
+        return Math.sqrt(Math.max(value, 0.0))
+    }
+
+    function averagedVonMisesByNodeId(nodeId) {
+        var sum = 0.0
+        var count = 0
+
+        for (var i = 0; i < elementRowsCache.length; i++) {
+            var elementRow = elementRowsCache[i]
+            if (!elementRow || !elementRow.node_ids)
+                continue
+
+            if (elementRow.node_ids.indexOf(nodeId) === -1)
+                continue
+
+            var vm = vonMisesByElementId(elementRow.element_id)
+            if (isFinite(vm)) {
+                sum += vm
+                count += 1
+            }
+        }
+
+        if (count === 0)
+            return NaN
+        return sum / count
+    }
+
+    function contourValueByNodeId(nodeId) {
+        if (contourMode === "von_mises")
+            return averagedVonMisesByNodeId(nodeId)
+        return displacementMagnitudeByNodeId(nodeId)
+    }
+
+    function contourDisplayTitle() {
+        if (contourMode !== "von_mises")
+            return "位移模长云图"
+        return vonMisesContourStyle === "reliable" ? "Von Mises 应力云图（可靠）" : "Von Mises 应力云图（平滑）"
+    }
+
+    function contourFormatValue(value) {
+        var numberValue = Number(value)
+        if (!isFinite(numberValue))
+            return "--"
+
+        var absValue = Math.abs(numberValue)
+        if (absValue > 0.0 && (absValue < 1e-3 || absValue >= 1e4))
+            return numberValue.toExponential(3)
+
+        return numberValue.toPrecision(4)
+    }
+
+    function contourRangeText() {
+        return "Min: " + contourFormatValue(contourMinValue) + "    Max: " + contourFormatValue(contourMaxValue)
+    }
+
+    function contourLegendNote() {
+        if (contourMode !== "von_mises")
+            return "位移模长：由节点位移插值得到"
+        return vonMisesContourStyle === "reliable" ? "可靠云图：CST 单元真实常值结果" : "平滑云图：相邻单元平均到节点后插值"
+    }
+
+    function toggleVonMisesContourStyle() {
+        vonMisesContourStyle = vonMisesContourStyle === "smooth" ? "reliable" : "smooth"
+        contourTitle = contourDisplayTitle()
+        updateContourRange()
+        if (contourOverlayVisible && contourMode === "von_mises" && contourCanvas)
+            contourCanvas.requestPaint()
+    }
+
+    function updateContourRange() {
+        var minValue = Number.POSITIVE_INFINITY
+        var maxValue = Number.NEGATIVE_INFINITY
+
+        if (contourMode === "von_mises" && vonMisesContourStyle === "reliable") {
+            for (var e = 0; e < elementRowsCache.length; e++) {
+                var elementRow = elementRowsCache[e]
+                if (!elementRow)
+                    continue
+
+                var elementValue = vonMisesByElementId(elementRow.element_id)
+                if (!isFinite(elementValue))
+                    continue
+
+                minValue = Math.min(minValue, elementValue)
+                maxValue = Math.max(maxValue, elementValue)
+            }
+        } else {
+            for (var i = 0; i < nodeListModel.count; i++) {
+                var nodeRow = nodeListModel.get(i)
+                var value = contourValueByNodeId(nodeRow.node_id)
+                if (!isFinite(value))
+                    continue
+
+                minValue = Math.min(minValue, value)
+                maxValue = Math.max(maxValue, value)
+            }
+        }
+
+        if (!isFinite(minValue) || !isFinite(maxValue)) {
+            contourMinValue = 0.0
+            contourMaxValue = 1.0
+            return
+        }
+
+        if (Math.abs(maxValue - minValue) < 1e-30) {
+            contourMinValue = minValue
+            contourMaxValue = minValue + 1.0
+            return
+        }
+
+        contourMinValue = minValue
+        contourMaxValue = maxValue
+    }
+
+    function contourColor(value, alpha) {
+        if (!isFinite(value))
+            return "rgba(170, 184, 194, " + alpha + ")"
+
+        var ratio = (value - contourMinValue) / (contourMaxValue - contourMinValue)
+        ratio = Math.max(0.0, Math.min(1.0, ratio))
+
+        // 工程常用蓝-青-绿-黄-红伪彩色，避免引入额外模块。
+        var stops = [
+            { p: 0.00, r: 45,  g: 84,  b: 184 },
+            { p: 0.25, r: 40,  g: 172, b: 220 },
+            { p: 0.50, r: 76,  g: 175, b: 80  },
+            { p: 0.75, r: 245, g: 196, b: 66  },
+            { p: 1.00, r: 210, g: 65,  b: 56  }
+        ]
+
+        for (var i = 0; i < stops.length - 1; i++) {
+            var a = stops[i]
+            var b = stops[i + 1]
+            if (ratio >= a.p && ratio <= b.p) {
+                var local = (ratio - a.p) / Math.max(1e-12, b.p - a.p)
+                var r = Math.round(a.r + (b.r - a.r) * local)
+                var g = Math.round(a.g + (b.g - a.g) * local)
+                var bb = Math.round(a.b + (b.b - a.b) * local)
+                return "rgba(" + r + ", " + g + ", " + bb + ", " + alpha + ")"
+            }
+        }
+
+        return "rgba(210, 65, 56, " + alpha + ")"
+    }
+
+    function contourNodeToCanvasX(xValue, canvasWidth) {
+        var padding = 44
+        var usableWidth = Math.max(1, canvasWidth - padding * 2)
+        return padding + ((xValue - viewportMinX()) / viewportRangeX()) * usableWidth
+    }
+
+    function contourNodeToCanvasY(yValue, canvasHeight) {
+        var padding = 44
+        var usableHeight = Math.max(1, canvasHeight - padding * 2)
+        return canvasHeight - padding - ((yValue - viewportMinY()) / viewportRangeY()) * usableHeight
+    }
+
+    function openContourOverlay(modeName) {
+        if (!appController.solver_has_result || nodeResultModel.count === 0) {
+            shell_status = "暂无求解结果，无法显示云图"
+            return
+        }
+
+        if (modeName === "von_mises" && elementResultModel.count === 0) {
+            shell_status = "暂无单元应力结果，无法显示 Von Mises 云图"
+            return
+        }
+
+        contourMode = modeName
+        contourTitle = contourDisplayTitle()
+        updateContourRange()
+        contourOverlayVisible = true
+        shell_status = "已打开" + contourTitle
+
+        if (contourCanvas)
+            contourCanvas.requestPaint()
+    }
+
+    function closeContourOverlay() {
+        contourOverlayVisible = false
+        shell_status = "已关闭云图窗口"
+    }
+
+    function localPathFromFileUrl(fileUrl, defaultSuffix) {
+        var raw = String(fileUrl)
+        var path = raw
+
+        if (raw.indexOf("file:///") === 0) {
+            path = decodeURIComponent(raw.substring(8))
+            if (!(path.length > 1 && path.charAt(1) === ":"))
+                path = "/" + path
+        } else if (raw.indexOf("file://") === 0) {
+            path = decodeURIComponent(raw.substring(7))
+        } else {
+            path = decodeURIComponent(raw)
+        }
+
+        var slashIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"))
+        var fileName = slashIndex >= 0 ? path.substring(slashIndex + 1) : path
+        if (fileName.indexOf(".") === -1)
+            path += defaultSuffix
+
+        return path
+    }
+
+    function requestContourImageExport(modeName) {
+        if (!appController.solver_has_result || nodeResultModel.count === 0) {
+            shell_status = "请先完成求解，再导出云图"
+            return
+        }
+
+        if (modeName === "von_mises" && elementResultModel.count === 0) {
+            shell_status = "暂无单元应力结果，无法导出 Von Mises 云图"
+            return
+        }
+
+        openContourOverlay(modeName)
+        if (!contourOverlayVisible)
+            return
+
+        exportContourImageDialog.open()
+    }
+
+    function saveContourImageToFile(fileUrl) {
+        if (!contourOverlayVisible || !contourWindow) {
+            shell_status = "云图窗口未打开，无法导出"
+            return
+        }
+
+        var path = localPathFromFileUrl(fileUrl, ".png")
+        updateContourRange()
+        if (contourCanvas)
+            contourCanvas.requestPaint()
+
+        Qt.callLater(function() {
+            contourWindow.grabToImage(function(result) {
+                var ok = result.saveToFile(path)
+                shell_status = ok ? ("已导出" + contourTitle + "：" + path) : "导出云图失败：无法保存图像"
+            }, Qt.size(contourWindow.width, contourWindow.height))
+        })
     }
 
     function refreshSelectionInfo() {
@@ -347,6 +745,12 @@ ApplicationWindow {
             selectedElementMaterialNameValue.text = info.has_material ? info.material_name : "未分配"
             selectedElementPlaneModeValue.text = info.has_material ? info.plane_mode : "—"
             elementMaterialCombo.currentIndex = materialComboIndexById(appController.selected_element_material_id)
+
+            if (distributedLoadEdgeCombo.currentIndex < 0)
+                distributedLoadEdgeCombo.currentIndex = 0
+            selectedDistributedLoadEdgeIndex = distributedLoadEdgeCombo.currentIndex >= 0 ? distributedLoadEdgeCombo.currentIndex : 0
+            refreshDistributedLoadEdgeHighlight()
+            syncSelectedDistributedLoadEditor()
         } else {
             selectedElementIdValue.text = "—"
             selectedElementNodeIdsValue.text = "—"
@@ -355,15 +759,40 @@ ApplicationWindow {
             selectedElementMaterialNameValue.text = "—"
             selectedElementPlaneModeValue.text = "—"
             elementMaterialCombo.currentIndex = -1
+            distributedLoadQxField.text = ""
+            distributedLoadQyField.text = ""
+            refreshDistributedLoadEdgeHighlight()
         }
 
         refreshSelectionInfo()
+    }
+
+    function syncSelectedDistributedLoadEditor() {
+        if (typeof distributedLoadEdgeCombo === "undefined" || typeof distributedLoadQxField === "undefined" || typeof distributedLoadQyField === "undefined")
+            return
+
+        if (!appController.selected_element_exists || !appController.get_selected_element_distributed_load_info) {
+            distributedLoadQxField.text = ""
+            distributedLoadQyField.text = ""
+            return
+        }
+
+        var edgeIndex = distributedLoadEdgeCombo.currentIndex >= 0 ? distributedLoadEdgeCombo.currentIndex : 0
+        var info = appController.get_selected_element_distributed_load_info(edgeIndex)
+        if (info && info.has_load) {
+            distributedLoadQxField.text = Number(info.qx).toString()
+            distributedLoadQyField.text = Number(info.qy).toString()
+        } else {
+            distributedLoadQxField.text = ""
+            distributedLoadQyField.text = ""
+        }
     }
 
     function refreshAllData() {
         refreshNodeModel()
         refreshElementModel()
         refreshMaterialModel()
+        refreshBoundaryModel()
         refreshNodeResultModel()
         refreshElementResultModel()
         syncSelectedNodeEditor()
@@ -494,6 +923,67 @@ ApplicationWindow {
             && baseY <= viewport.height - viewportPadding
     }
 
+    function pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
+        var d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+        var d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+        var d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+
+        var hasNegative = (d1 < -0.0001) || (d2 < -0.0001) || (d3 < -0.0001)
+        var hasPositive = (d1 > 0.0001) || (d2 > 0.0001) || (d3 > 0.0001)
+
+        return !(hasNegative && hasPositive)
+    }
+
+    function elementIdAtViewportPoint(viewX, viewY) {
+        for (var i = elementRowsCache.length - 1; i >= 0; i--) {
+            var elementRow = elementRowsCache[i]
+            if (!elementRow || !elementRow.node_ids || elementRow.node_ids.length !== 3)
+                continue
+
+            var n1 = findNodeRowById(elementRow.node_ids[0])
+            var n2 = findNodeRowById(elementRow.node_ids[1])
+            var n3 = findNodeRowById(elementRow.node_ids[2])
+            if (n1 === null || n2 === null || n3 === null)
+                continue
+
+            var inside = pointInTriangle(
+                viewX,
+                viewY,
+                nodeToViewportX(n1.node_x),
+                nodeToViewportY(n1.node_y),
+                nodeToViewportX(n2.node_x),
+                nodeToViewportY(n2.node_y),
+                nodeToViewportX(n3.node_x),
+                nodeToViewportY(n3.node_y)
+            )
+
+            if (inside)
+                return elementRow.element_id
+        }
+
+        return -1
+    }
+
+    function selectElementAtViewportPoint(viewX, viewY) {
+        var elementId = elementIdAtViewportPoint(viewX, viewY)
+        if (elementId === -1)
+            return false
+
+        var ok = appController.select_element(elementId)
+        if (ok) {
+            rightPanelVisible = true
+            syncSelectedElementEditor()
+            refreshSelectionInfo()
+            if (elementCanvas)
+                elementCanvas.requestPaint()
+            shell_status = "已在视口中选中单元 " + elementId + "，可在右侧直接修改材料"
+        } else {
+            shell_status = appController.status_text
+        }
+
+        return ok
+    }
+
     function zoomViewportAt(viewX, viewY, wheelDeltaY) {
         var beforeModelX = viewportToModelX(viewX)
         var beforeModelY = viewportToModelY(viewY)
@@ -519,8 +1009,22 @@ ApplicationWindow {
 
     property var elementRowsCache: []
     property var materialRowsCache: []
+    property var constraintRowsCache: []
+    property var loadRowsCache: []
+    property var distributedLoadRowsCache: []
+    property int selectedDistributedLoadEdgeIndex: 0
+    property int boundaryVisualVersion: 0
     property int selectedMaterialIdForEdit: -1
     property int rightInspectorPageHint: 0
+
+    // 阶段13.3：工程版云图临时覆盖窗口状态。
+    // 只使用现有节点/单元/结果缓存，不改变主视口绘制逻辑。
+    property bool contourOverlayVisible: false
+    property string contourMode: "displacement"
+    property string contourTitle: "位移云图"
+    property string vonMisesContourStyle: "smooth"
+    property real contourMinValue: 0.0
+    property real contourMaxValue: 1.0
 
 
     ListModel {
@@ -555,11 +1059,14 @@ ApplicationWindow {
 
         function onMaterialDataChanged() {
             refreshMaterialModel()
+            refreshElementModel()
             syncSelectedElementEditor()
         }
 
         function onBoundaryDataChanged() {
+            refreshBoundaryModel()
             syncSelectedNodeEditor()
+            syncSelectedDistributedLoadEditor()
             if (elementCanvas)
                 elementCanvas.requestPaint()
         }
@@ -576,6 +1083,21 @@ ApplicationWindow {
         function onSolverResultsChanged() {
             refreshNodeResultModel()
             refreshElementResultModel()
+
+            if (!appController.solver_has_result) {
+                if (contourOverlayVisible) {
+                    contourOverlayVisible = false
+                    shell_status = "求解结果已失效，已关闭云图窗口"
+                }
+                return
+            }
+
+            if (contourOverlayVisible) {
+                contourTitle = contourDisplayTitle()
+                updateContourRange()
+                if (contourCanvas)
+                    contourCanvas.requestPaint()
+            }
         }
     }
 
@@ -2166,6 +2688,119 @@ ApplicationWindow {
                                         }
                                     }
                                 }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    radius: 12
+                                    color: bgPanel3
+                                    border.color: borderColor
+                                    implicitHeight: 152
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 12
+                                        spacing: 8
+
+                                        Label {
+                                            text: "云图显示"
+                                            color: textMain
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
+
+                                        Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
+
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 8
+
+                                            PanelActionButton {
+                                                Layout.fillWidth: true
+                                                text: "位移云图"
+                                                enabled: appController.solver_has_result && nodeResultModel.count > 0
+                                                onClicked: openContourOverlay("displacement")
+                                            }
+
+                                            PanelActionButton {
+                                                Layout.fillWidth: true
+                                                text: "Von Mises"
+                                                enabled: appController.solver_has_result && elementResultModel.count > 0
+                                                onClicked: openContourOverlay("von_mises")
+                                            }
+                                        }
+
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Von Mises 显示模式"
+                                            color: textMuted
+                                            font.pixelSize: 11
+                                        }
+
+                                        Item {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 30
+                                            opacity: appController.solver_has_result && elementResultModel.count > 0 ? 1.0 : 0.45
+
+                                            Rectangle {
+                                                id: vonMisesModeTrack
+                                                anchors.fill: parent
+                                                radius: height / 2
+                                                color: "#eef3f7"
+                                                border.color: "#ccd6df"
+                                                border.width: 1
+
+                                                Rectangle {
+                                                    width: parent.width / 2 - 4
+                                                    height: parent.height - 4
+                                                    x: vonMisesContourStyle === "smooth" ? 2 : parent.width / 2 + 2
+                                                    y: 2
+                                                    radius: height / 2
+                                                    color: "#ffffff"
+                                                    border.color: "#b8c6d3"
+                                                    border.width: 1
+
+                                                    Behavior on x {
+                                                        NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                                                    }
+                                                }
+
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 4
+                                                    anchors.rightMargin: 4
+                                                    spacing: 0
+
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        text: "平滑"
+                                                        color: vonMisesContourStyle === "smooth" ? textMain : textMuted
+                                                        font.pixelSize: 12
+                                                        font.bold: vonMisesContourStyle === "smooth"
+                                                    }
+
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                        text: "可靠"
+                                                        color: vonMisesContourStyle === "reliable" ? textMain : textMuted
+                                                        font.pixelSize: 12
+                                                        font.bold: vonMisesContourStyle === "reliable"
+                                                    }
+                                                }
+
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    enabled: appController.solver_has_result && elementResultModel.count > 0
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: toggleVonMisesContourStyle()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2356,7 +2991,9 @@ ApplicationWindow {
                                                 ShapePath {
                                                     strokeColor: (modelData && modelData.element_id === appController.selected_element_id) ? "#1f5fbf" : "#4f79c7"
                                                     strokeWidth: (modelData && modelData.element_id === appController.selected_element_id) ? 3.2 : 2.2
-                                                    fillColor: (modelData && modelData.element_id === appController.selected_element_id) ? "#c9dcffbb" : "#dbe6fb99"
+                                                    fillColor: (modelData && modelData.element_id === appController.selected_element_id)
+                                                               ? (modelData.selected_fill_color || "#c9dcffbb")
+                                                               : (modelData.fill_color || "#dbe6fb99")
                                                     capStyle: ShapePath.RoundCap
                                                     joinStyle: ShapePath.RoundJoin
                                                     startX: nodeToViewportX(elementShapeItem.n1.node_x)
@@ -2460,6 +3097,278 @@ ApplicationWindow {
                                     }
                                 }
 
+                                Item {
+                                    id: boundaryOverlay
+                                    anchors.fill: parent
+                                    z: 2.4
+
+                                    Item {
+                                        id: selectedDistributedLoadEdgeHighlight
+                                        anchors.fill: parent
+                                        visible: appController.selected_element_exists
+                                                 && appController.current_mode === "element"
+                                                 && selectedElementRow !== null
+                                                 && selectedEdgeNodeI !== null
+                                                 && selectedEdgeNodeJ !== null
+
+                                        property int visualVersion: boundaryVisualVersion
+                                        property var selectedElementRow: appController.selected_element_exists
+                                                                     ? findElementRowById(appController.selected_element_id)
+                                                                     : null
+                                        property var selectedEdgeIds: edgeNodeIdsForElementRow(selectedElementRow, selectedDistributedLoadEdgeIndex)
+                                        property var selectedEdgeNodeI: selectedEdgeIds.length === 2 ? findNodeRowById(selectedEdgeIds[0]) : null
+                                        property var selectedEdgeNodeJ: selectedEdgeIds.length === 2 ? findNodeRowById(selectedEdgeIds[1]) : null
+
+                                        Shape {
+                                            anchors.fill: parent
+                                            visible: selectedDistributedLoadEdgeHighlight.visible
+
+                                            ShapePath {
+                                                strokeColor: "#f59e0b"
+                                                strokeWidth: 5.0
+                                                fillColor: "transparent"
+                                                capStyle: ShapePath.RoundCap
+                                                joinStyle: ShapePath.RoundJoin
+                                                startX: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI !== null ? nodeToViewportX(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI.node_x) : 0.0
+                                                startY: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI !== null ? nodeToViewportY(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI.node_y) : 0.0
+
+                                                PathLine {
+                                                    x: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ !== null ? nodeToViewportX(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ.node_x) : 0.0
+                                                    y: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ !== null ? nodeToViewportY(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ.node_y) : 0.0
+                                                }
+                                            }
+
+                                            ShapePath {
+                                                strokeColor: "#fff3c4"
+                                                strokeWidth: 2.0
+                                                fillColor: "transparent"
+                                                capStyle: ShapePath.RoundCap
+                                                joinStyle: ShapePath.RoundJoin
+                                                startX: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI !== null ? nodeToViewportX(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI.node_x) : 0.0
+                                                startY: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI !== null ? nodeToViewportY(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeI.node_y) : 0.0
+
+                                                PathLine {
+                                                    x: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ !== null ? nodeToViewportX(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ.node_x) : 0.0
+                                                    y: selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ !== null ? nodeToViewportY(selectedDistributedLoadEdgeHighlight.selectedEdgeNodeJ.node_y) : 0.0
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Repeater {
+                                        model: distributedLoadRowsCache
+
+                                        delegate: Item {
+                                            id: distributedLoadArrowItem
+                                            anchors.fill: parent
+                                            visible: nodeI !== null && nodeJ !== null && loadMagnitude > 1e-12
+
+                                            property var nodeI: modelData ? findNodeRowById(modelData.node_i_id) : null
+                                            property var nodeJ: modelData ? findNodeRowById(modelData.node_j_id) : null
+                                            property real qx: modelData ? Number(modelData.qx) : 0.0
+                                            property real qy: modelData ? Number(modelData.qy) : 0.0
+                                            property real loadMagnitude: Math.sqrt(qx * qx + qy * qy)
+                                            property real dirX: loadMagnitude > 1e-12 ? qx / loadMagnitude : 0.0
+                                            property real dirY: loadMagnitude > 1e-12 ? -qy / loadMagnitude : 0.0
+                                            property real arrowLength: 26.0
+                                            property real headLength: 7.0
+                                            property real headHalfWidth: 4.2
+                                            property int arrowCount: 4
+                                            property real x1: nodeI !== null ? nodeToViewportX(nodeI.node_x) : 0.0
+                                            property real y1: nodeI !== null ? nodeToViewportY(nodeI.node_y) : 0.0
+                                            property real x2: nodeJ !== null ? nodeToViewportX(nodeJ.node_x) : 0.0
+                                            property real y2: nodeJ !== null ? nodeToViewportY(nodeJ.node_y) : 0.0
+                                            // 均布载荷箭头沿受载边从起点节点覆盖到终点节点。
+                                            // 第一个箭头头部贴在 node_i，最后一个箭头头部贴在 node_j。
+                                            property real firstArrowT: 0.0
+                                            property real lastArrowT: 1.0
+                                            property real firstHeadX: x1 + (x2 - x1) * firstArrowT
+                                            property real firstHeadY: y1 + (y2 - y1) * firstArrowT
+                                            property real lastHeadX: x1 + (x2 - x1) * lastArrowT
+                                            property real lastHeadY: y1 + (y2 - y1) * lastArrowT
+                                            property real firstTailX: firstHeadX - dirX * arrowLength
+                                            property real firstTailY: firstHeadY - dirY * arrowLength
+                                            property real lastTailX: lastHeadX - dirX * arrowLength
+                                            property real lastTailY: lastHeadY - dirY * arrowLength
+                                            property real perpX: -dirY
+                                            property real perpY: dirX
+
+                                            Shape {
+                                                anchors.fill: parent
+                                                visible: distributedLoadArrowItem.visible
+
+                                                ShapePath {
+                                                    // 均布载荷的连接线应连接箭尾，而不是连接贴在边界上的箭头。
+                                                    // 这样可以同时满足“箭头头部贴边”和“尾部相连”的工程图示习惯。
+                                                    strokeColor: "#d93025"
+                                                    strokeWidth: 1.4
+                                                    fillColor: "transparent"
+                                                    capStyle: ShapePath.RoundCap
+                                                    joinStyle: ShapePath.RoundJoin
+                                                    startX: distributedLoadArrowItem.firstTailX
+                                                    startY: distributedLoadArrowItem.firstTailY
+
+                                                    PathLine {
+                                                        x: distributedLoadArrowItem.lastTailX
+                                                        y: distributedLoadArrowItem.lastTailY
+                                                    }
+                                                }
+                                            }
+
+                                            Repeater {
+                                                model: distributedLoadArrowItem.arrowCount
+
+                                                delegate: Shape {
+                                                    id: distributedUniformArrowShape
+                                                    anchors.fill: parent
+                                                    visible: distributedLoadArrowItem.visible
+
+                                                    // 用 index/(count-1) 而不是 (index+0.5)/count，
+                                                    // 这样箭头头部会覆盖边的两个端点节点，起止位置更明确。
+                                                    property real t: distributedLoadArrowItem.arrowCount > 1 ? index / (distributedLoadArrowItem.arrowCount - 1) : 0.0
+                                                    property real endX: distributedLoadArrowItem.x1 + (distributedLoadArrowItem.x2 - distributedLoadArrowItem.x1) * t
+                                                    property real endY: distributedLoadArrowItem.y1 + (distributedLoadArrowItem.y2 - distributedLoadArrowItem.y1) * t
+                                                    property real startX: endX - distributedLoadArrowItem.dirX * distributedLoadArrowItem.arrowLength
+                                                    property real startY: endY - distributedLoadArrowItem.dirY * distributedLoadArrowItem.arrowLength
+                                                    property real baseX: endX - distributedLoadArrowItem.dirX * distributedLoadArrowItem.headLength
+                                                    property real baseY: endY - distributedLoadArrowItem.dirY * distributedLoadArrowItem.headLength
+                                                    property real headX1: baseX + distributedLoadArrowItem.perpX * distributedLoadArrowItem.headHalfWidth
+                                                    property real headY1: baseY + distributedLoadArrowItem.perpY * distributedLoadArrowItem.headHalfWidth
+                                                    property real headX2: baseX - distributedLoadArrowItem.perpX * distributedLoadArrowItem.headHalfWidth
+                                                    property real headY2: baseY - distributedLoadArrowItem.perpY * distributedLoadArrowItem.headHalfWidth
+
+                                                    ShapePath {
+                                                        strokeColor: "#d93025"
+                                                        strokeWidth: 2.0
+                                                        fillColor: "transparent"
+                                                        capStyle: ShapePath.RoundCap
+                                                        joinStyle: ShapePath.RoundJoin
+                                                        startX: distributedUniformArrowShape.startX
+                                                        startY: distributedUniformArrowShape.startY
+
+                                                        PathLine {
+                                                            x: distributedUniformArrowShape.endX
+                                                            y: distributedUniformArrowShape.endY
+                                                        }
+                                                    }
+
+                                                    ShapePath {
+                                                        strokeColor: "#d93025"
+                                                        strokeWidth: 2.0
+                                                        fillColor: "transparent"
+                                                        capStyle: ShapePath.RoundCap
+                                                        joinStyle: ShapePath.RoundJoin
+                                                        startX: distributedUniformArrowShape.endX
+                                                        startY: distributedUniformArrowShape.endY
+
+                                                        PathLine {
+                                                            x: distributedUniformArrowShape.headX1
+                                                            y: distributedUniformArrowShape.headY1
+                                                        }
+                                                    }
+
+                                                    ShapePath {
+                                                        strokeColor: "#d93025"
+                                                        strokeWidth: 2.0
+                                                        fillColor: "transparent"
+                                                        capStyle: ShapePath.RoundCap
+                                                        joinStyle: ShapePath.RoundJoin
+                                                        startX: distributedUniformArrowShape.endX
+                                                        startY: distributedUniformArrowShape.endY
+
+                                                        PathLine {
+                                                            x: distributedUniformArrowShape.headX2
+                                                            y: distributedUniformArrowShape.headY2
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Repeater {
+                                        model: loadRowsCache
+
+                                        delegate: Item {
+                                            id: loadArrowItem
+                                            anchors.fill: parent
+                                            visible: loadNode !== null && loadMagnitude > 1e-12
+
+                                            property var loadNode: modelData ? findNodeRowById(modelData.node_id) : null
+                                            property real fx: modelData ? Number(modelData.fx) : 0.0
+                                            property real fy: modelData ? Number(modelData.fy) : 0.0
+                                            property real loadMagnitude: Math.sqrt(fx * fx + fy * fy)
+                                            property real dirX: loadMagnitude > 1e-12 ? fx / loadMagnitude : 0.0
+                                            property real dirY: loadMagnitude > 1e-12 ? -fy / loadMagnitude : 0.0
+                                            property real arrowLength: 34.0
+                                            property real headLength: 9.0
+                                            property real headHalfWidth: 5.5
+                                            property real startX: loadNode !== null ? nodeToViewportX(loadNode.node_x) : 0.0
+                                            property real startY: loadNode !== null ? nodeToViewportY(loadNode.node_y) : 0.0
+                                            property real endX: startX + dirX * arrowLength
+                                            property real endY: startY + dirY * arrowLength
+                                            property real baseX: endX - dirX * headLength
+                                            property real baseY: endY - dirY * headLength
+                                            property real perpX: -dirY
+                                            property real perpY: dirX
+                                            property real headX1: baseX + perpX * headHalfWidth
+                                            property real headY1: baseY + perpY * headHalfWidth
+                                            property real headX2: baseX - perpX * headHalfWidth
+                                            property real headY2: baseY - perpY * headHalfWidth
+
+                                            Shape {
+                                                anchors.fill: parent
+                                                visible: loadArrowItem.visible
+
+                                                ShapePath {
+                                                    strokeColor: "#d93025"
+                                                    strokeWidth: 2.4
+                                                    fillColor: "transparent"
+                                                    capStyle: ShapePath.RoundCap
+                                                    joinStyle: ShapePath.RoundJoin
+                                                    startX: loadArrowItem.startX
+                                                    startY: loadArrowItem.startY
+
+                                                    PathLine {
+                                                        x: loadArrowItem.endX
+                                                        y: loadArrowItem.endY
+                                                    }
+                                                }
+
+                                                ShapePath {
+                                                    strokeColor: "#d93025"
+                                                    strokeWidth: 2.4
+                                                    fillColor: "transparent"
+                                                    capStyle: ShapePath.RoundCap
+                                                    joinStyle: ShapePath.RoundJoin
+                                                    startX: loadArrowItem.endX
+                                                    startY: loadArrowItem.endY
+
+                                                    PathLine {
+                                                        x: loadArrowItem.headX1
+                                                        y: loadArrowItem.headY1
+                                                    }
+                                                }
+
+                                                ShapePath {
+                                                    strokeColor: "#d93025"
+                                                    strokeWidth: 2.4
+                                                    fillColor: "transparent"
+                                                    capStyle: ShapePath.RoundCap
+                                                    joinStyle: ShapePath.RoundJoin
+                                                    startX: loadArrowItem.endX
+                                                    startY: loadArrowItem.endY
+
+                                                    PathLine {
+                                                        x: loadArrowItem.headX2
+                                                        y: loadArrowItem.headY2
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 MouseArea {
                                     id: viewportMouseArea
                                     objectName: "viewportMouseArea"
@@ -2476,7 +3385,19 @@ ApplicationWindow {
                                     }
 
                                     onPressed: function(mouse) {
-                                        if (activeViewportTool === "move") {
+                                        viewportPanActive = false
+                                        viewportPanMoved = false
+
+                                        if (!window.viewportPointIsValid(mouse.x, mouse.y))
+                                            return
+
+                                        var clickedElementId = elementIdAtViewportPoint(mouse.x, mouse.y)
+                                        var clickedBlankInElementMode = appController.current_mode === "element" && clickedElementId === -1
+                                        var blankPanInNodeMode = appController.current_mode === "node" && activeViewportTool !== "add"
+                                        var forceMoveTool = activeViewportTool === "move"
+
+                                        if (forceMoveTool || clickedBlankInElementMode || blankPanInNodeMode) {
+                                            viewportPanActive = true
                                             lastPanMouseX = mouse.x
                                             lastPanMouseY = mouse.y
                                             mouse.accepted = true
@@ -2484,9 +3405,14 @@ ApplicationWindow {
                                     }
 
                                     onPositionChanged: function(mouse) {
-                                        if (activeViewportTool === "move" && pressed) {
-                                            viewportPanX += mouse.x - lastPanMouseX
-                                            viewportPanY += mouse.y - lastPanMouseY
+                                        if (viewportPanActive && pressed) {
+                                            var dx = mouse.x - lastPanMouseX
+                                            var dy = mouse.y - lastPanMouseY
+                                            if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5)
+                                                viewportPanMoved = true
+
+                                            viewportPanX += dx
+                                            viewportPanY += dy
                                             lastPanMouseX = mouse.x
                                             lastPanMouseY = mouse.y
                                             shell_status = "正在移动视图"
@@ -2499,6 +3425,12 @@ ApplicationWindow {
                                         }
                                     }
 
+                                    onReleased: function(mouse) {
+                                        if (!pressed) {
+                                            viewportPanActive = false
+                                        }
+                                    }
+
                                     onClicked: function(mouse) {
                                         if (!window.viewportPointIsValid(mouse.x, mouse.y))
                                             return
@@ -2506,37 +3438,65 @@ ApplicationWindow {
                                         window.cursorModelX = window.viewportToModelX(mouse.x)
                                         window.cursorModelY = window.viewportToModelY(mouse.y)
 
-                                        if (activeViewportTool === "delete") {
-                                            deleteCurrentNodeFromView()
-                                            return
-                                        }
-
-                                        if (activeViewportTool !== "add") {
+                                        if (viewportPanActive && viewportPanMoved) {
+                                            viewportPanActive = false
+                                            viewportPanMoved = false
                                             return
                                         }
 
                                         if (appController.current_mode === "element") {
+                                            if (selectElementAtViewportPoint(mouse.x, mouse.y)) {
+                                                viewportPanActive = false
+                                                viewportPanMoved = false
+                                                return
+                                            }
+
+                                            shell_status = "空白区域：按住并拖动可移动视图"
+                                            viewportPanActive = false
+                                            viewportPanMoved = false
                                             return
                                         }
 
-                                        if (appController.current_mode !== "node") {
-                                            shell_status = "当前不是节点模式，无法通过视口创建节点"
+                                        if (appController.current_mode === "node") {
+                                            if (activeViewportTool !== "add") {
+                                                shell_status = "空白区域：按住并拖动可移动视图"
+                                                viewportPanActive = false
+                                                viewportPanMoved = false
+                                                return
+                                            }
+
+                                            if (elementIdAtViewportPoint(mouse.x, mouse.y) !== -1) {
+                                                shell_status = "当前位置已有单元，请点击空白区域创建新节点"
+                                                viewportPanActive = false
+                                                viewportPanMoved = false
+                                                return
+                                            }
+
+                                            var ok = appController.add_node_by_coord(
+                                                        window.cursorModelX,
+                                                        window.cursorModelY
+                                                    )
+                                            if (ok) {
+                                                refreshNodeModel()
+                                                syncSelectedNodeEditor()
+
+                                                shell_status = "已在视口创建节点 ("
+                                                               + Number(window.cursorModelX).toFixed(3)
+                                                               + ", "
+                                                               + Number(window.cursorModelY).toFixed(3)
+                                                               + ")"
+                                            }
+
+                                            viewportPanActive = false
+                                            viewportPanMoved = false
                                             return
                                         }
 
-                                        var ok = appController.add_node_by_coord(
-                                                    window.cursorModelX,
-                                                    window.cursorModelY
-                                                )
-                                        if (ok) {
-                                            refreshNodeModel()
-                                            syncSelectedNodeEditor()
-
-                                            shell_status = "已在视口创建节点 ("
-                                                           + Number(window.cursorModelX).toFixed(3)
-                                                           + ", "
-                                                           + Number(window.cursorModelY).toFixed(3)
-                                                           + ")"
+                                        if (activeViewportTool === "move") {
+                                            shell_status = "空白区域：按住并拖动可移动视图"
+                                            viewportPanActive = false
+                                            viewportPanMoved = false
+                                            return
                                         }
                                     }
                                 }
@@ -2556,7 +3516,7 @@ ApplicationWindow {
 
                                     Label {
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        text: "节点模式下可点击空白处创建节点；单元模式下请直接点击节点选点；按住 Ctrl + 鼠标滚轮缩放"
+                                        text: "节点模式添加工具：点击空白创建节点；单元模式：点击单元面选中单元，点击节点进行建单元选点；空白处拖动移动视图"
                                         color: textMuted
                                     }
 
@@ -2577,14 +3537,18 @@ ApplicationWindow {
                                         y: window.nodeToViewportY(model.node_y) - 8
                                         z: 2
 
+                                        property bool nodeHasConstraint: boundaryVisualVersion >= 0 && hasConstraintForNode(model.node_id)
+
                                         Rectangle {
                                             width: 16
                                             height: 16
                                             radius: 8
-                                            border.width: 2
-                                            border.color: appController.is_node_in_element_selection(model.node_id)
-                                                          ? "#d18b00"
-                                                          : (model.node_id === appController.selected_node_id ? accent : "#6c8197")
+                                            border.width: nodeHasConstraint ? 3 : 2
+                                            border.color: nodeHasConstraint
+                                                          ? "#d93025"
+                                                          : (appController.is_node_in_element_selection(model.node_id)
+                                                             ? "#d18b00"
+                                                             : (model.node_id === appController.selected_node_id ? accent : "#6c8197"))
                                             color: appController.is_node_in_element_selection(model.node_id)
                                                    ? "#ffd86b"
                                                    : (model.node_id === appController.selected_node_id ? accent : "#b1bfcb")
@@ -2836,7 +3800,7 @@ ApplicationWindow {
                                 radius: 12
                                 color: bgPanel3
                                 border.color: borderColor
-                                implicitHeight: 154
+                                implicitHeight: 230
 
                                 ColumnLayout {
                                     anchors.fill: parent
@@ -2855,7 +3819,7 @@ ApplicationWindow {
                                     Label {
                                         Layout.fillWidth: true
                                         wrapMode: Text.WordWrap
-                                        text: appController.solver_has_result ? "当前已有求解结果，可导出 CSV 文件。" : "请先完成求解，再导出节点位移与单元应力应变结果。"
+                                        text: appController.solver_has_result ? "当前已有求解结果，可导出 CSV 文件和云图 PNG。" : "请先完成求解，再导出节点位移、单元应力应变与云图结果。"
                                         color: textMuted
                                     }
 
@@ -2876,6 +3840,33 @@ ApplicationWindow {
                                             enabled: appController.solver_has_result
                                             onClicked: exportElementResultsDialog.open()
                                         }
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "导出位移云图"
+                                            enabled: appController.solver_has_result
+                                            onClicked: requestContourImageExport("displacement")
+                                        }
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "导出 Von Mises（" + (vonMisesContourStyle === "reliable" ? "可靠" : "平滑") + "）"
+                                            enabled: appController.solver_has_result
+                                            onClicked: requestContourImageExport("von_mises")
+                                        }
+                                    }
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                        text: "Von Mises 云图导出模式跟随左侧云图开关。"
+                                        color: textMuted
+                                        font.pixelSize: 10
                                     }
                                 }
                             }
@@ -3118,8 +4109,10 @@ ApplicationWindow {
                                                                         constraintUxValueField.text,
                                                                         constraintUyValueField.text)
                                                             shell_status = appController.status_text
-                                                            if (ok)
+                                                            if (ok) {
+                                                                refreshBoundaryModel()
                                                                 syncSelectedNodeEditor()
+                                                            }
                                                         }
                                                     }
 
@@ -3129,8 +4122,10 @@ ApplicationWindow {
                                                         onClicked: {
                                                             var ok = appController.clear_selected_node_constraint()
                                                             shell_status = appController.status_text
-                                                            if (ok)
+                                                            if (ok) {
+                                                                refreshBoundaryModel()
                                                                 syncSelectedNodeEditor()
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3172,8 +4167,10 @@ ApplicationWindow {
                                                         onClicked: {
                                                             var ok = appController.set_selected_node_load_by_text(loadFxField.text, loadFyField.text)
                                                             shell_status = appController.status_text
-                                                            if (ok)
+                                                            if (ok) {
+                                                                refreshBoundaryModel()
                                                                 syncSelectedNodeEditor()
+                                                            }
                                                         }
                                                     }
 
@@ -3183,8 +4180,10 @@ ApplicationWindow {
                                                         onClicked: {
                                                             var ok = appController.clear_selected_node_load()
                                                             shell_status = appController.status_text
-                                                            if (ok)
+                                                            if (ok) {
+                                                                refreshBoundaryModel()
                                                                 syncSelectedNodeEditor()
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3200,7 +4199,9 @@ ApplicationWindow {
                                 color: bgPanel3
                                 border.color: borderColor
                                 visible: appController.selected_element_exists && (!appController.selected_node_exists || appController.current_mode === "element")
-                                implicitHeight: visible ? 320 : 0
+                                // 均布载荷面板加入后，单元检查器内容超过原 500px。
+                                // 这里增大卡片的隐式高度，让外层 ScrollView 能正确滚到底部。
+                                implicitHeight: visible ? 680 : 0
 
                                 ColumnLayout {
                                     anchors.fill: parent
@@ -3295,6 +4296,77 @@ ApplicationWindow {
                                             onClicked: {
                                                 materialPopup.open()
                                                 refreshMaterialModel()
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle { Layout.fillWidth: true; height: 1; color: "#dfe5eb" }
+
+                                    Label {
+                                        text: "边界均布载荷"
+                                        color: textMain
+                                        font.bold: true
+                                    }
+
+                                    PanelComboBox {
+                                        id: distributedLoadEdgeCombo
+                                        Layout.fillWidth: true
+                                        enabled: appController.selected_element_exists
+                                        model: ["边 0：节点1-节点2", "边 1：节点2-节点3", "边 2：节点3-节点1"]
+                                        currentIndex: 0
+                                        onCurrentIndexChanged: {
+                                            selectedDistributedLoadEdgeIndex = currentIndex >= 0 ? currentIndex : 0
+                                            syncSelectedDistributedLoadEditor()
+                                            refreshDistributedLoadEdgeHighlight()
+                                            shell_status = "正在设置边界均布载荷：" + currentText
+                                        }
+                                    }
+
+                                    Label { text: "qx"; color: textMuted }
+                                    PanelTextField {
+                                        id: distributedLoadQxField
+                                        Layout.fillWidth: true
+                                        placeholderText: "边界均布载荷 qx"
+                                    }
+
+                                    Label { text: "qy"; color: textMuted }
+                                    PanelTextField {
+                                        id: distributedLoadQyField
+                                        Layout.fillWidth: true
+                                        placeholderText: "边界均布载荷 qy"
+                                    }
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 8
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "应用均布载荷"
+                                            enabled: appController.selected_element_exists
+                                            onClicked: {
+                                                var edgeIndex = distributedLoadEdgeCombo.currentIndex >= 0 ? distributedLoadEdgeCombo.currentIndex : 0
+                                                var ok = appController.set_selected_element_distributed_load_by_text(edgeIndex, distributedLoadQxField.text, distributedLoadQyField.text)
+                                                shell_status = appController.status_text
+                                                if (ok) {
+                                                    refreshBoundaryModel()
+                                                    syncSelectedDistributedLoadEditor()
+                                                }
+                                            }
+                                        }
+
+                                        PanelActionButton {
+                                            Layout.fillWidth: true
+                                            text: "清除该边"
+                                            enabled: appController.selected_element_exists
+                                            onClicked: {
+                                                var edgeIndex = distributedLoadEdgeCombo.currentIndex >= 0 ? distributedLoadEdgeCombo.currentIndex : 0
+                                                var ok = appController.clear_selected_element_distributed_load(edgeIndex)
+                                                shell_status = appController.status_text
+                                                if (ok) {
+                                                    refreshBoundaryModel()
+                                                    syncSelectedDistributedLoadEditor()
+                                                }
                                             }
                                         }
                                     }
@@ -3473,9 +4545,20 @@ ApplicationWindow {
                                     onClicked: fillMaterialEditor(modelData.material_id)
                                 }
 
+                                Rectangle {
+                                    width: 14
+                                    height: 14
+                                    radius: 4
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: modelData.material_color || "#AEB8C2"
+                                    border.color: "#9aa6b2"
+                                }
+
                                 Column {
                                     anchors.fill: parent
-                                    anchors.leftMargin: 10
+                                    anchors.leftMargin: 32
                                     anchors.verticalCenter: parent.verticalCenter
                                     spacing: 2
 
@@ -3644,6 +4727,270 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 text: "清空编辑"
                                 onClicked: clearMaterialEditor()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        id: contourOverlay
+        anchors.fill: parent
+        z: 80
+        visible: contourOverlayVisible
+        color: "#00000066"
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: { }
+        }
+
+        Rectangle {
+            id: contourWindow
+            width: Math.min(window.width * 0.82, 1120)
+            height: Math.min(window.height * 0.78, 720)
+            anchors.centerIn: parent
+            radius: 16
+            color: "#f7f9fb"
+            border.color: "#c3ccd6"
+            border.width: 1
+            clip: true
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 0
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 48
+                    color: "#e8ecef"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 12
+                        spacing: 10
+
+                        Label {
+                            text: contourTitle
+                            color: textMain
+                            font.pixelSize: 15
+                            font.bold: true
+                        }
+
+                        Label {
+                            text: contourRangeText()
+                            color: textMuted
+                            font.pixelSize: 11
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        HeaderActionButton {
+                            text: "关闭"
+                            onClicked: closeContourOverlay()
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.margins: 14
+                    spacing: 12
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        radius: 10
+                        color: "#ffffff"
+                        border.color: "#d4dbe3"
+                        clip: true
+
+                        Canvas {
+                            id: contourCanvas
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            visible: contourOverlayVisible
+
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.clearRect(0, 0, width, height)
+
+                                ctx.fillStyle = "#fbfcfc"
+                                ctx.fillRect(0, 0, width, height)
+
+                                updateContourRange()
+
+                                var subdivisions = 16
+                                for (var e = 0; e < elementRowsCache.length; e++) {
+                                    var elementRow = elementRowsCache[e]
+                                    if (!elementRow || !elementRow.node_ids || elementRow.node_ids.length !== 3)
+                                        continue
+
+                                    var n1 = findNodeRowById(elementRow.node_ids[0])
+                                    var n2 = findNodeRowById(elementRow.node_ids[1])
+                                    var n3 = findNodeRowById(elementRow.node_ids[2])
+                                    if (n1 === null || n2 === null || n3 === null)
+                                        continue
+
+                                    var v1 = contourValueByNodeId(n1.node_id)
+                                    var v2 = contourValueByNodeId(n2.node_id)
+                                    var v3 = contourValueByNodeId(n3.node_id)
+                                    if (contourMode === "von_mises" && vonMisesContourStyle === "reliable") {
+                                        var elementVm = vonMisesByElementId(elementRow.element_id)
+                                        v1 = elementVm
+                                        v2 = elementVm
+                                        v3 = elementVm
+                                    }
+                                    if (!isFinite(v1) || !isFinite(v2) || !isFinite(v3))
+                                        continue
+
+                                    function pointAt(a, b) {
+                                        var l1 = 1.0 - a - b
+                                        var xModel = l1 * n1.node_x + a * n2.node_x + b * n3.node_x
+                                        var yModel = l1 * n1.node_y + a * n2.node_y + b * n3.node_y
+                                        var value = l1 * v1 + a * v2 + b * v3
+                                        return {
+                                            x: contourNodeToCanvasX(xModel, width),
+                                            y: contourNodeToCanvasY(yModel, height),
+                                            value: value
+                                        }
+                                    }
+
+                                    function drawSubTriangle(p0, p1, p2) {
+                                        var avg = (p0.value + p1.value + p2.value) / 3.0
+                                        ctx.beginPath()
+                                        ctx.moveTo(p0.x, p0.y)
+                                        ctx.lineTo(p1.x, p1.y)
+                                        ctx.lineTo(p2.x, p2.y)
+                                        ctx.closePath()
+                                        ctx.fillStyle = contourColor(avg, 0.92)
+                                        ctx.fill()
+                                    }
+
+                                    for (var i = 0; i < subdivisions; i++) {
+                                        for (var j = 0; j < subdivisions - i; j++) {
+                                            var a0 = i / subdivisions
+                                            var b0 = j / subdivisions
+                                            var a1 = (i + 1) / subdivisions
+                                            var b1 = j / subdivisions
+                                            var a2 = i / subdivisions
+                                            var b2 = (j + 1) / subdivisions
+
+                                            drawSubTriangle(pointAt(a0, b0), pointAt(a1, b1), pointAt(a2, b2))
+
+                                            if (j < subdivisions - i - 1) {
+                                                var a3 = (i + 1) / subdivisions
+                                                var b3 = (j + 1) / subdivisions
+                                                drawSubTriangle(pointAt(a1, b1), pointAt(a3, b3), pointAt(a2, b2))
+                                            }
+                                        }
+                                    }
+
+                                    ctx.beginPath()
+                                    ctx.moveTo(contourNodeToCanvasX(n1.node_x, width), contourNodeToCanvasY(n1.node_y, height))
+                                    ctx.lineTo(contourNodeToCanvasX(n2.node_x, width), contourNodeToCanvasY(n2.node_y, height))
+                                    ctx.lineTo(contourNodeToCanvasX(n3.node_x, width), contourNodeToCanvasY(n3.node_y, height))
+                                    ctx.closePath()
+                                    ctx.strokeStyle = "rgba(54, 65, 77, 0.35)"
+                                    ctx.lineWidth = 1.0
+                                    ctx.stroke()
+                                }
+
+                                for (var nodeIndex = 0; nodeIndex < nodeListModel.count; nodeIndex++) {
+                                    var nodeRow = nodeListModel.get(nodeIndex)
+                                    var cx = contourNodeToCanvasX(nodeRow.node_x, width)
+                                    var cy = contourNodeToCanvasY(nodeRow.node_y, height)
+                                    ctx.beginPath()
+                                    ctx.arc(cx, cy, 3.5, 0, Math.PI * 2)
+                                    ctx.fillStyle = "rgba(31, 41, 51, 0.86)"
+                                    ctx.fill()
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.preferredWidth: 132
+                        Layout.fillHeight: true
+                        radius: 10
+                        color: "#ffffff"
+                        border.color: "#d4dbe3"
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 8
+
+                            Label {
+                                text: "颜色图例"
+                                color: textMain
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Max"
+                                color: textMain
+                                font.pixelSize: 10
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: contourFormatValue(contourMaxValue)
+                                color: textMuted
+                                font.pixelSize: 10
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+
+                            Rectangle {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.preferredWidth: 30
+                                Layout.fillHeight: true
+                                radius: 5
+                                border.color: "#cfd7df"
+                                border.width: 1
+                                gradient: Gradient {
+                                    GradientStop { position: 0.00; color: "#d24138" }
+                                    GradientStop { position: 0.25; color: "#f5c442" }
+                                    GradientStop { position: 0.50; color: "#4caf50" }
+                                    GradientStop { position: 0.75; color: "#28acdc" }
+                                    GradientStop { position: 1.00; color: "#2d54b8" }
+                                }
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Min"
+                                color: textMain
+                                font.pixelSize: 10
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: contourFormatValue(contourMinValue)
+                                color: textMuted
+                                font.pixelSize: 10
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#e3e8ee" }
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: contourLegendNote()
+                                color: textMuted
+                                font.pixelSize: 10
+                                wrapMode: Text.WordWrap
                             }
                         }
                     }

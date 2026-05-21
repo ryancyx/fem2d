@@ -1,3 +1,4 @@
+import copy
 import csv
 import json
 import math
@@ -52,6 +53,11 @@ class AppController(QObject):
         # 阶段6：当前选中的单元
         self._selected_element_id: int | None = None
 
+        # 阶段13.2：边界均布载荷。
+        # 说明：这里先由 AppController 单独维护，求解前再临时等效为节点集中力。
+        # 这样不需要立刻改 FEMModel / solver 的核心结构，风险更低。
+        self._distributed_loads: list[dict] = []
+
     @Property(str, notify=status_text_changed)
     def status_text(self):
         return self._status_text
@@ -78,7 +84,7 @@ class AppController(QObject):
 
     @Property(int, notify=model_stats_changed)
     def load_count(self):
-        return len(self._model.loads)
+        return len(self._model.loads) + len(self._distributed_loads)
 
     @Property(bool, notify=solver_results_changed)
     def solver_has_result(self):
@@ -322,12 +328,16 @@ class AppController(QObject):
         rows: list[dict] = []
 
         for element in self._model.elements:
+            material_color = self._material_color_for_id(element.material_id)
             rows.append(
                 {
                     "id": int(element.id),
                     "node_ids": list(element.node_ids),
                     "material_id": -1 if element.material_id is None else int(element.material_id),
                     "element_type": str(element.element_type),
+                    "material_color": material_color,
+                    "fill_color": self._with_alpha(material_color, "99"),
+                    "selected_fill_color": self._with_alpha(material_color, "cc"),
                 }
             )
 
@@ -346,6 +356,7 @@ class AppController(QObject):
                     "poisson_ratio": float(material.poisson_ratio),
                     "thickness": float(material.thickness),
                     "plane_mode": str(material.plane_mode),
+                    "color": self._material_color_for_id(material.id),
                 }
             )
 
@@ -387,6 +398,132 @@ class AppController(QObject):
         rows.sort(key=lambda item: item["id"])
         return rows
 
+    def _normalize_distributed_load_rows(self, rows) -> list[dict]:
+        normalized: list[dict] = []
+        if not isinstance(rows, list):
+            return normalized
+
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            try:
+                normalized.append(
+                    {
+                        "id": int(item.get("id", len(normalized) + 1)),
+                        "element_id": int(item.get("element_id", -1)),
+                        "local_edge_index": int(item.get("local_edge_index", 0)),
+                        "qx": float(item.get("qx", 0.0)),
+                        "qy": float(item.get("qy", 0.0)),
+                        "load_type": str(item.get("load_type", "edge_uniform")),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+
+        normalized.sort(key=lambda row: int(row.get("id", 0)))
+        return normalized
+
+    def _next_dict_id(self, rows: list[dict]) -> int:
+        if not rows:
+            return 1
+        return max(int(row.get("id", 0)) for row in rows) + 1
+
+    def _edge_node_ids_for_element(self, element: Element, local_edge_index: int) -> tuple[int, int]:
+        if local_edge_index == 0:
+            return int(element.node_ids[0]), int(element.node_ids[1])
+        if local_edge_index == 1:
+            return int(element.node_ids[1]), int(element.node_ids[2])
+        if local_edge_index == 2:
+            return int(element.node_ids[2]), int(element.node_ids[0])
+        raise ValueError("边编号必须为 0、1 或 2")
+
+    def _edge_length_by_node_ids(self, node_i_id: int, node_j_id: int) -> float:
+        xi, yi = self._get_node_coords_by_id(node_i_id)
+        xj, yj = self._get_node_coords_by_id(node_j_id)
+        return math.hypot(xj - xi, yj - yi)
+
+    def _find_distributed_load(self, element_id: int, local_edge_index: int) -> dict | None:
+        for item in self._distributed_loads:
+            if int(item.get("element_id", -1)) == element_id and int(item.get("local_edge_index", -1)) == local_edge_index:
+                return item
+        return None
+
+    def _build_distributed_load_rows(self) -> list[dict]:
+        rows: list[dict] = []
+
+        for item in self._distributed_loads:
+            try:
+                element_id = int(item.get("element_id", -1))
+                edge_index = int(item.get("local_edge_index", -1))
+                element = self._find_element_by_id(element_id)
+                if element is None:
+                    continue
+
+                node_i_id, node_j_id = self._edge_node_ids_for_element(element, edge_index)
+                rows.append(
+                    {
+                        "id": int(item.get("id", -1)),
+                        "element_id": element_id,
+                        "local_edge_index": edge_index,
+                        "node_i_id": node_i_id,
+                        "node_j_id": node_j_id,
+                        "qx": float(item.get("qx", 0.0)),
+                        "qy": float(item.get("qy", 0.0)),
+                        "load_type": "edge_uniform",
+                    }
+                )
+            except Exception:
+                continue
+
+        rows.sort(key=lambda row: row["id"])
+        return rows
+
+    def _equivalent_nodal_loads_from_distributed_load(self, item: dict) -> list[tuple[int, float, float]]:
+        element_id = int(item.get("element_id", -1))
+        edge_index = int(item.get("local_edge_index", -1))
+        qx = float(item.get("qx", 0.0))
+        qy = float(item.get("qy", 0.0))
+
+        element = self._find_element_by_id(element_id)
+        if element is None:
+            raise ValueError(f"均布载荷引用了不存在的单元 {element_id}")
+        if element.material_id is None:
+            raise ValueError(f"单元 {element_id} 尚未分配材料，无法计算均布载荷等效节点力")
+
+        material = self._find_material_by_id(element.material_id)
+        if material is None:
+            raise ValueError(f"单元 {element_id} 引用了不存在的材料 {element.material_id}")
+
+        node_i_id, node_j_id = self._edge_node_ids_for_element(element, edge_index)
+        edge_length = self._edge_length_by_node_ids(node_i_id, node_j_id)
+        if edge_length <= 0.0:
+            raise ValueError(f"单元 {element_id} 的边 {edge_index} 长度无效")
+
+        half_fx = 0.5 * edge_length * float(material.thickness) * qx
+        half_fy = 0.5 * edge_length * float(material.thickness) * qy
+        return [(node_i_id, half_fx, half_fy), (node_j_id, half_fx, half_fy)]
+
+    def _build_solver_model_with_distributed_loads(self) -> FEMModel:
+        solver_model: FEMModel = copy.deepcopy(self._model)
+        next_load_id = self._next_id(solver_model.loads)
+
+        for item in self._distributed_loads:
+            for node_id, fx, fy in self._equivalent_nodal_loads_from_distributed_load(item):
+                if abs(fx) < 1e-15 and abs(fy) < 1e-15:
+                    continue
+                solver_model.loads.append(
+                    Load(
+                        id=next_load_id,
+                        node_id=node_id,
+                        fx=fx,
+                        fy=fy,
+                        load_type="nodal",
+                    )
+                )
+                next_load_id += 1
+
+        return solver_model
+
     def _find_node_by_id(self, node_id: int) -> Node | None:
         for node in self._model.nodes:
             if node.id == node_id:
@@ -404,6 +541,46 @@ class AppController(QObject):
             if material.id == material_id:
                 return material
         return None
+
+    def _material_color_for_id(self, material_id: int | None) -> str:
+        if material_id is None or int(material_id) < 0:
+            return "#AEB8C2"
+
+        material = self._find_material_by_id(int(material_id))
+        if material is None:
+            return "#AEB8C2"
+
+        color = getattr(material, "color", None)
+        if color is None or str(color).strip() == "":
+            # 兼容旧工程/旧对象：若材料没有 color 字段，就按材料编号临时生成稳定颜色。
+            return self._default_material_color_by_id(material.id)
+
+        return str(color).strip()
+
+    def _default_material_color_by_id(self, material_id: int) -> str:
+        palette = [
+            "#8FB7D8",
+            "#9BC7AA",
+            "#D6B37A",
+            "#B7A1D8",
+            "#D69A9A",
+            "#8FC9C5",
+            "#C8BE84",
+            "#AEB8C2",
+        ]
+        try:
+            index = max(int(material_id) - 1, 0) % len(palette)
+        except Exception:
+            index = 0
+        return palette[index]
+
+    def _with_alpha(self, color: str, alpha: str) -> str:
+        normalized = str(color).strip()
+        if normalized.startswith("#") and len(normalized) == 7:
+            return normalized + alpha
+        if normalized.startswith("#") and len(normalized) == 9:
+            return normalized[:7] + alpha
+        return "#dbe6fb" + alpha
 
     def _find_constraint_by_node_id(self, node_id: int) -> Constraint | None:
         for constraint in self._model.constraints:
@@ -591,6 +768,7 @@ class AppController(QObject):
                 "file_type": "fem2d_project",
                 "version": 1,
                 "model": self._model.to_dict(),
+                "distributed_loads": list(self._distributed_loads),
             }
 
             path.write_text(
@@ -625,6 +803,7 @@ class AppController(QObject):
             loaded_model = FEMModel.from_dict(model_data)
 
             self._model = loaded_model
+            self._distributed_loads = self._normalize_distributed_load_rows(data.get("distributed_loads", []))
             fixed_count = self._normalize_all_element_node_orders_to_ccw()
             self._current_project_path = str(path)
             self._reset_runtime_state_after_project_change()
@@ -642,6 +821,7 @@ class AppController(QObject):
     @Slot()
     def new_model(self) -> None:
         self._model = FEMModel()
+        self._distributed_loads = []
         self._current_project_path = None
         self._selected_node_id = None
         self._selected_element_id = None
@@ -687,6 +867,10 @@ class AppController(QObject):
     @Slot(result="QVariantList")
     def get_load_rows(self):
         return self._build_load_rows()
+
+    @Slot(result="QVariantList")
+    def get_distributed_load_rows(self):
+        return self._build_distributed_load_rows()
 
     @Slot(result="QVariantList")
     def get_materials(self):
@@ -766,6 +950,7 @@ class AppController(QObject):
             "poisson_ratio": 0.0 if material is None else float(material.poisson_ratio),
             "thickness": 0.0 if material is None else float(material.thickness),
             "plane_mode": "" if material is None else str(material.plane_mode),
+            "color": "#AEB8C2" if material is None else self._material_color_for_id(material.id),
         }
 
     @Slot(int, result=bool)
@@ -922,6 +1107,7 @@ class AppController(QObject):
         self._invalidate_results_after_model_change()
 
         self._model.elements = [item for item in self._model.elements if item.id != element_id]
+        self._distributed_loads = [item for item in self._distributed_loads if int(item.get("element_id", -1)) != element_id]
 
         if self._selected_element_id == element_id:
             self._set_selected_element_id(None)
@@ -930,6 +1116,7 @@ class AppController(QObject):
         self.set_status_text(f"已删除单元 {element_id}")
         self.notify_model_stats_changed()
         self._notify_element_data_changed()
+        self._notify_boundary_data_changed()
         return True
 
     @Slot(result=bool)
@@ -1130,6 +1317,7 @@ class AppController(QObject):
         material.plane_mode = plane_mode
 
         self._notify_material_data_changed()
+        self._notify_element_data_changed()
         self._notify_selected_element_changed()
         self.set_status_text(f"已更新材料 {material.id}：{material.name}")
         return True
@@ -1268,6 +1456,7 @@ class AppController(QObject):
 
         self.notify_model_stats_changed()
         self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
         if self._selected_node_id == node_id:
             self._notify_selected_node_changed()
         self.set_status_text(f"已设置节点 {node_id} 约束")
@@ -1344,6 +1533,7 @@ class AppController(QObject):
 
         self.notify_model_stats_changed()
         self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
         if self._selected_node_id == node_id:
             self._notify_selected_node_changed()
         self.set_status_text(f"已清除节点 {node_id} 约束")
@@ -1397,6 +1587,7 @@ class AppController(QObject):
 
         self.notify_model_stats_changed()
         self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
         if self._selected_node_id == node_id:
             self._notify_selected_node_changed()
         self.set_status_text(f"已设置节点 {node_id} 载荷")
@@ -1448,6 +1639,7 @@ class AppController(QObject):
 
         self.notify_model_stats_changed()
         self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
         if self._selected_node_id == node_id:
             self._notify_selected_node_changed()
         self.set_status_text(f"已清除节点 {node_id} 载荷")
@@ -1461,6 +1653,146 @@ class AppController(QObject):
             return False
 
         return self.clear_load(node.id)
+
+    # =========================
+    # 阶段13.2：边界均布载荷管理接口
+    # =========================
+
+    @Slot(int, result="QVariantMap")
+    def get_selected_element_distributed_load_info(self, local_edge_index: int):
+        element = self._get_selected_element()
+        if element is None:
+            return {}
+
+        try:
+            edge_index = int(local_edge_index)
+            node_i_id, node_j_id = self._edge_node_ids_for_element(element, edge_index)
+        except ValueError:
+            return {}
+
+        item = self._find_distributed_load(element.id, edge_index)
+        return {
+            "element_id": int(element.id),
+            "local_edge_index": edge_index,
+            "node_i_id": int(node_i_id),
+            "node_j_id": int(node_j_id),
+            "has_load": item is not None,
+            "qx": 0.0 if item is None else float(item.get("qx", 0.0)),
+            "qy": 0.0 if item is None else float(item.get("qy", 0.0)),
+        }
+
+    @Slot(int, int, float, float, result=bool)
+    def set_distributed_load(self, element_id: int, local_edge_index: int, qx: float, qy: float) -> bool:
+        element = self._find_element_by_id(element_id)
+        if element is None:
+            self.set_status_text(f"设置均布载荷失败：不存在编号为 {element_id} 的单元")
+            return False
+
+        try:
+            local_edge_index = int(local_edge_index)
+            node_i_id, node_j_id = self._edge_node_ids_for_element(element, local_edge_index)
+            qx = self._validate_finite_number(qx, "qx")
+            qy = self._validate_finite_number(qy, "qy")
+            if abs(qx) < 1e-15 and abs(qy) < 1e-15:
+                raise ValueError("qx 与 qy 不能同时为 0")
+
+            if element.material_id is None:
+                raise ValueError(f"单元 {element_id} 尚未分配材料")
+            material = self._find_material_by_id(element.material_id)
+            if material is None:
+                raise ValueError(f"单元 {element_id} 引用了不存在的材料 {element.material_id}")
+        except ValueError as exc:
+            self.set_status_text(f"设置均布载荷失败：{exc}")
+            return False
+
+        self._invalidate_results_after_model_change()
+
+        item = self._find_distributed_load(element_id, local_edge_index)
+        if item is None:
+            self._distributed_loads.append(
+                {
+                    "id": self._next_dict_id(self._distributed_loads),
+                    "element_id": int(element_id),
+                    "local_edge_index": int(local_edge_index),
+                    "qx": float(qx),
+                    "qy": float(qy),
+                    "load_type": "edge_uniform",
+                }
+            )
+        else:
+            item["qx"] = float(qx)
+            item["qy"] = float(qy)
+            item["load_type"] = "edge_uniform"
+
+        self.notify_model_stats_changed()
+        self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
+        self.set_status_text(
+            f"已设置单元 {element_id} 的均布载荷：起点节点 {node_i_id} → 终点节点 {node_j_id}"
+        )
+        return True
+
+    @Slot(int, str, str, result=bool)
+    def set_selected_element_distributed_load_by_text(self, local_edge_index: int, qx_text: str, qy_text: str) -> bool:
+        element = self._get_selected_element()
+        if element is None:
+            self.set_status_text("设置均布载荷失败：当前没有选中任何单元")
+            return False
+
+        try:
+            qx = self._parse_float_text(qx_text, "qx")
+            qy = self._parse_float_text(qy_text, "qy")
+        except ValueError as exc:
+            self.set_status_text(f"设置均布载荷失败：{exc}")
+            return False
+
+        return self.set_distributed_load(element.id, local_edge_index, qx, qy)
+
+    @Slot(int, int, result=bool)
+    def clear_distributed_load(self, element_id: int, local_edge_index: int) -> bool:
+        element = self._find_element_by_id(element_id)
+        if element is None:
+            self.set_status_text(f"清除均布载荷失败：不存在编号为 {element_id} 的单元")
+            return False
+
+        try:
+            node_i_id, node_j_id = self._edge_node_ids_for_element(element, int(local_edge_index))
+        except ValueError as exc:
+            self.set_status_text(f"清除均布载荷失败：{exc}")
+            return False
+
+        old_count = len(self._distributed_loads)
+        self._distributed_loads = [
+            item
+            for item in self._distributed_loads
+            if not (
+                int(item.get("element_id", -1)) == int(element_id)
+                and int(item.get("local_edge_index", -1)) == int(local_edge_index)
+            )
+        ]
+
+        if len(self._distributed_loads) == old_count:
+            self.set_status_text(f"清除均布载荷失败：单元 {element_id} 边 {local_edge_index} 当前没有均布载荷")
+            return False
+
+        self._invalidate_results_after_model_change()
+
+        self.notify_model_stats_changed()
+        self._notify_boundary_data_changed()
+        self._notify_node_data_changed()
+        self.set_status_text(
+            f"已清除单元 {element_id} 的均布载荷：起点节点 {node_i_id} → 终点节点 {node_j_id}"
+        )
+        return True
+
+    @Slot(int, result=bool)
+    def clear_selected_element_distributed_load(self, local_edge_index: int) -> bool:
+        element = self._get_selected_element()
+        if element is None:
+            self.set_status_text("清除均布载荷失败：当前没有选中任何单元")
+            return False
+
+        return self.clear_distributed_load(element.id, local_edge_index)
 
     @Slot()
     def add_test_node(self) -> None:
@@ -1655,7 +1987,8 @@ class AppController(QObject):
             if fixed_count > 0:
                 self._notify_element_data_changed()
             self._validate_model_before_solve()
-            solver_result = solve_linear_static(self._model)
+            solver_model = self._build_solver_model_with_distributed_loads()
+            solver_result = solve_linear_static(solver_model)
 
             self._solver_result = solver_result
             self._node_result_rows = self._build_node_result_rows(solver_result)
